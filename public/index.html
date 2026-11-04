@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>图片复刻 Studio</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<aside id="sidebar">
+  <h1>图片复刻 Studio</h1>
+  <div class="new-project">
+    <input id="newName" placeholder="新项目名，例如 韩女街拍">
+    <button id="newBtn">新建</button>
+  </div>
+  <ul id="projects"></ul>
+  <div id="health" class="health"></div>
+  <button id="longTest" class="ghost small">测一下长连接（15 秒）</button>
+  <div id="queueInfo" class="muted"></div>
+</aside>
+
+<main id="main">
+  <div id="empty" class="empty">左侧新建或选择一个项目</div>
+  <div id="workspace" hidden>
+    <header class="ws-head">
+      <input id="projName" class="proj-name">
+      <nav id="tabs">
+        <button data-tab="case" class="active">① 案例</button>
+        <button data-tab="model">② 模特</button>
+        <button data-tab="gen">③ 出图</button>
+        <button data-tab="gallery">④ 画廊</button>
+        <button data-tab="styles">⑤ 风格卡</button>
+      </nav>
+      <button id="openDir" class="ghost">打开项目文件夹</button>
+    </header>
+
+    <section id="tab-case" class="tab">
+      <div class="row">
+        <input id="caseUrl" class="grow" placeholder="粘贴抖音分享文案或链接（图文/视频都行）">
+        <button id="caseBtn">抓取案例</button>
+        <label class="btn ghost">上传参考图<input id="refUpload" type="file" accept="image/*" multiple hidden></label>
+      </div>
+      <p class="hint">勾选最多 3 张当 moodboard（只借光线/色调/肤感/构图）。选和你要做的场景<b>不同</b>的图，避免照抄构图。</p>
+      <div id="moodboardBar" class="moodbar"></div>
+      <div id="cases"></div>
+    </section>
+
+    <section id="tab-model" class="tab" hidden>
+      <div class="row">
+        <label class="btn">上传模特照片<input id="faceUpload" type="file" accept="image/*" hidden></label>
+        <span class="hint">也可以在画廊里点「设为模特」。裁出脸和头发效果最好。真人照片请确认本人同意。</span>
+      </div>
+      <div id="faces" class="cards"></div>
+    </section>
+
+    <section id="tab-gen" class="tab" hidden>
+      <div class="gen-grid">
+        <form id="genForm" class="panel">
+          <div class="row">
+            <label>预设 <select id="preset"><option value="">— 选一个验证过的场景 —</option></select></label>
+          </div>
+          <div class="row wrap">
+            <label>拍法 <select name="shot"></select></label>
+            <label>闪光 <select name="flash"></select></label>
+            <label>景别 <select name="framing"></select></label>
+            <label>比例 <select name="aspect"></select></label>
+          </div>
+          <label>五官（留空用默认非偶像脸）<textarea name="face" rows="3"></textarea></label>
+          <label>发型 <textarea name="hair" rows="2"></textarea></label>
+          <label>表情 / 视线 <textarea name="expression" rows="2"></textarea></label>
+          <label>服装 <textarea name="outfit" rows="2"></textarea></label>
+          <label>动作 <textarea name="action" rows="2"></textarea></label>
+          <label>场景 <textarea name="scene" rows="2"></textarea></label>
+          <label>光线 <textarea name="light" rows="2"></textarea></label>
+          <label>补充 <textarea name="extra" rows="2"></textarea></label>
+          <p class="hint">建议用英文写；中文也能用，但英文更稳定。别写雀斑、毛孔（会变满脸斑点），鞋包会自动加「无 logo」。</p>
+        </form>
+
+        <div class="panel">
+          <label>最终提示词（可直接改）<textarea id="promptBox" rows="14"></textarea></label>
+          <div class="row"><button id="rebuild" class="ghost" type="button">从表单重新生成</button><span id="promptLen" class="muted"></span></div>
+          <div class="row wrap">
+            <label>模型 <select id="model"></select></label>
+            <label>张数 <select id="count"><option>1</option><option selected>2</option><option>3</option><option>4</option></select></label>
+            <label>模特 <select id="genFace"><option value="">不固定（随机新面孔）</option></select></label>
+            <label>后期 <select id="post"></select></label>
+          </div>
+          <div id="genRefs" class="moodbar"></div>
+          <button id="genBtn" class="primary">开始出图</button>
+          <details id="batchBox" class="batch"><summary>一键出一组（多个场景一起出）</summary>
+            <p class="hint">每个勾选的场景用它的预设表单出图，共用上面的模型、张数、模特、后期、moodboard，以及表单里的「五官」和「补充」。</p>
+            <div id="batchList" class="batch-list"></div>
+            <button id="batchBtn" type="button">按勾选场景出图</button>
+          </details>
+          <div class="row"><button id="saveStyleBtn" class="ghost" type="button">把当前设置存为风格卡</button><span class="hint">会带上 moodboard、表单、后期和本项目 4 星以上的图</span></div>
+          <div id="genJobs"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="tab-styles" class="tab" hidden>
+      <p class="hint">风格卡 = 一套验证过的 moodboard + 表单 + 后期 + 高星成品，所有项目通用。套用后会把它的图放进「① 案例」并设为 moodboard，表单也会填好。</p>
+      <div id="styles" class="cards"></div>
+    </section>
+
+    <section id="tab-gallery" class="tab" hidden>
+      <div class="row wrap">
+        <label class="check"><input id="showRaw" type="checkbox"> 看原图（不加后期）</label>
+        <label class="check"><input id="onlyStar" type="checkbox"> 只看打星的</label>
+        <span class="grow"></span>
+        <span id="selCount" class="muted"></span>
+        <button id="exportBtn">导出选中（原图+拼图）</button>
+      </div>
+      <div id="gallery"></div>
+    </section>
+  </div>
+</main>
+
+<div id="modal" class="modal" hidden><div class="modal-body" id="modalBody"></div></div>
+<div id="toast"></div>
+<script src="/app.js" type="module"></script>
+</body>
+</html>

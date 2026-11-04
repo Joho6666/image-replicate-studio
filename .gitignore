@@ -1,0 +1,14 @@
+# Local settings and secrets
+.env.local
+*.env
+!.env.example
+keys.env
+
+# Project data: downloaded cases (third-party copyrighted images), generated outputs, style cards
+data/
+
+# Tooling
+node_modules/
+.claude/
+*.log
+*.tmp

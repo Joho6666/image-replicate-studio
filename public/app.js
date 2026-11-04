@@ -1,0 +1,568 @@
+const $ = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+const state = { meta: null, p: null, tab: 'case', selected: new Set(), promptDirty: false };
+const FIELDS = ['shot', 'flash', 'framing', 'aspect', 'face', 'hair', 'expression', 'outfit', 'action', 'scene', 'light', 'extra'];
+const fileUrl = rel => `/files/${state.p.id}/${rel.split('/').map(encodeURIComponent).join('/')}`;
+
+function toast(msg, bad = false) {
+  const t = $('#toast');
+  t.textContent = msg;
+  t.className = 'show' + (bad ? ' bad' : '');
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => (t.className = ''), bad ? 6000 : 2500);
+}
+
+async function api(method, url, body) {
+  const res = await fetch(url, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) { toast(data.error || '请求失败', true); throw new Error(data.error); }
+  return data;
+}
+
+const readFile = file => new Promise((ok, bad) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = bad; r.readAsDataURL(file); });
+
+// ---- modal ------------------------------------------------------------------
+
+function openModal(html) { $('#modalBody').innerHTML = html; $('#modal').hidden = false; return $('#modalBody'); }
+function closeModal() { $('#modal').hidden = true; $('#modalBody').innerHTML = ''; }
+$('#modal').addEventListener('click', e => { if (e.target.id === 'modal') closeModal(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+const zoom = src => openModal(`<div class="zoom"><img src="${src}"></div>`);
+
+// ---- projects ---------------------------------------------------------------
+
+async function loadProjects() {
+  const list = await api('GET', '/api/projects');
+  $('#projects').innerHTML = list.map(p => `<li data-id="${p.id}" class="${state.p?.id === p.id ? 'active' : ''}">${esc(p.name)}<small>${p.createdAt.slice(0, 10)} · ${p.jobs} 批</small></li>`).join('');
+}
+
+$('#projects').addEventListener('click', e => { const li = e.target.closest('li'); if (li) openProject(li.dataset.id); });
+$('#newBtn').addEventListener('click', async () => {
+  const p = await api('POST', '/api/projects', { name: $('#newName').value });
+  $('#newName').value = '';
+  await loadProjects();
+  openProject(p.id);
+});
+$('#newName').addEventListener('keydown', e => { if (e.key === 'Enter') $('#newBtn').click(); });
+
+async function openProject(id) {
+  state.p = await api('GET', `/api/projects/${id}`);
+  state.selected.clear();
+  localStorage.setItem('lastProject', id);
+  $('#empty').hidden = true;
+  $('#workspace').hidden = false;
+  $('#projName').value = state.p.name;
+  loadDraft();
+  renderAll();
+  loadProjects();
+}
+
+$('#projName').addEventListener('change', async () => { state.p = await api('PATCH', `/api/projects/${state.p.id}`, { name: $('#projName').value }); loadProjects(); });
+$('#openDir').addEventListener('click', () => api('POST', `/api/projects/${state.p.id}/open`, { rel: '.' }));
+
+function setTab(tab) {
+  state.tab = tab;
+  $$('#tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  $$('.tab').forEach(s => (s.hidden = s.id !== 'tab-' + tab));
+  if (tab === 'gallery') renderGallery();
+  if (tab === 'styles') renderStyles();
+}
+$('#tabs').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setTab(b.dataset.tab); });
+
+function renderAll() { renderCases(); renderMoodbars(); renderFaces(); renderJobs(); renderGallery(); }
+
+// ---- ① cases ----------------------------------------------------------------
+
+function renderCases() {
+  const p = state.p;
+  $('#cases').innerHTML = p.cases.length ? p.cases.map(c => `
+    <div class="case">
+      <h3>${c.type === 'upload' ? '我上传的参考图' : c.type === 'style' ? `风格卡：${esc(c.author)} · ${c.images.length} 张（含高星成品）` : `${esc(c.author || '抖音作品')} · ${c.type === 'video' ? '视频截帧' : '图文'} · ${c.images.length} 张`}</h3>
+      ${c.authorPrompt ? `<div class="author-prompt"><b>识别到作者 prompt</b>（${c.authorPrompt.length} 字）<pre>${esc(c.authorPrompt)}</pre><button data-act="useAuthor" data-case="${esc(c.awemeId)}">用作者 prompt 出图</button> <span class="hint">填进提示词框；中文原文可直接用，也可以对照着改表单</span></div>` : ''}
+      ${c.desc && !['upload', 'style'].includes(c.type) ? `<details><summary>作品文案（常含作者 prompt）</summary><pre>${esc(c.desc)}</pre></details>` : ''}
+      <div class="thumbs">${c.images.map(img => thumb(img)).join('')}</div>
+    </div>`).join('') : '<p class="hint">还没有案例。粘贴一个抖音链接试试。</p>';
+}
+
+function thumb(rel) {
+  const i = state.p.moodboard.indexOf(rel);
+  return `<div class="thumb ${i >= 0 ? 'picked' : ''}" data-rel="${esc(rel)}" title="单击勾选 moodboard，双击放大">
+    <img src="${fileUrl(rel)}" loading="lazy">${i >= 0 ? `<span class="badge">参考 ${i + 1}</span>` : ''}</div>`;
+}
+
+$('#cases').addEventListener('click', async e => {
+  if (e.target.dataset.act === 'useAuthor') {
+    const c = state.p.cases.find(x => x.awemeId === e.target.dataset.case);
+    $('#promptBox').value = c.authorPrompt;
+    state.promptDirty = true;
+    updateLen(); saveDraft(); setTab('gen');
+    return toast('已填入作者 prompt（出图时会自动加上 moodboard 引导语）');
+  }
+  const t = e.target.closest('.thumb');
+  if (!t) return;
+  const rel = t.dataset.rel;
+  let mb = [...state.p.moodboard];
+  if (mb.includes(rel)) mb = mb.filter(x => x !== rel);
+  else { if (mb.length >= 3) return toast('moodboard 最多 3 张，先取消一张', true); mb.push(rel); }
+  state.p = await api('PATCH', `/api/projects/${state.p.id}`, { moodboard: mb });
+  renderCases(); renderMoodbars();
+});
+$('#cases').addEventListener('dblclick', e => { const t = e.target.closest('.thumb'); if (t) zoom(fileUrl(t.dataset.rel)); });
+
+$('#caseBtn').addEventListener('click', async () => {
+  const btn = $('#caseBtn');
+  btn.disabled = true; btn.textContent = '抓取中…（约 10–40 秒）';
+  try {
+    const c = await api('POST', `/api/projects/${state.p.id}/case`, { url: $('#caseUrl').value });
+    state.p = await api('GET', `/api/projects/${state.p.id}`);
+    toast(`抓到 ${c.images.length} 张`);
+    $('#caseUrl').value = '';
+    renderCases();
+  } finally { btn.disabled = false; btn.textContent = '抓取案例'; }
+});
+
+$('#refUpload').addEventListener('change', async e => {
+  for (const f of e.target.files) await api('POST', `/api/projects/${state.p.id}/upload`, { dataUrl: await readFile(f) });
+  e.target.value = '';
+  state.p = await api('GET', `/api/projects/${state.p.id}`);
+  renderCases();
+});
+
+function renderMoodbars() {
+  const mb = state.p.moodboard;
+  const html = mb.length ? `<span class="muted">moodboard：</span>${mb.map(r => `<img src="${fileUrl(r)}">`).join('')}` : '<span class="muted">没选 moodboard（纯文字出图）</span>';
+  $('#moodboardBar').innerHTML = html;
+  $('#genRefs').innerHTML = html;
+}
+
+// ---- ② model faces ----------------------------------------------------------
+
+function renderFaces() {
+  const p = state.p;
+  $('#faces').innerHTML = p.faces.length ? p.faces.map(f => `
+    <div class="card" data-id="${f.id}">
+      <img src="${fileUrl(f.file)}">
+      <div class="body"><b>${esc(f.name)}</b><div class="muted">${esc(f.desc)}</div>
+      <div class="actions"><button data-act="del">删除</button></div></div>
+    </div>`).join('') : '<p class="hint">还没有模特。上传一张脸部清楚的照片，或者在画廊里把满意的图「设为模特」。</p>';
+  const sel = $('#genFace');
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">不固定（随机新面孔）</option>' + p.faces.map(f => `<option value="${f.id}">${esc(f.name)}</option>`).join('');
+  sel.value = p.faces.some(f => f.id === cur) ? cur : '';
+}
+
+$('#faces').addEventListener('click', async e => {
+  const card = e.target.closest('.card');
+  if (!card) return;
+  if (e.target.dataset.act === 'del') {
+    if (!confirm('删除这个模特？（图片文件保留）')) return;
+    await api('DELETE', `/api/projects/${state.p.id}/faces/${card.dataset.id}`);
+    state.p = await api('GET', `/api/projects/${state.p.id}`);
+    renderFaces();
+  } else if (e.target.tagName === 'IMG') zoom(e.target.src);
+});
+
+$('#faceUpload').addEventListener('change', async e => {
+  const f = e.target.files[0];
+  e.target.value = '';
+  if (f) cropDialog({ dataUrl: await readFile(f) });
+});
+
+// Draw a rectangle on the image; coordinates are sent in natural pixels.
+function cropDialog({ source, dataUrl }) {
+  const src = dataUrl || fileUrl(source);
+  const body = openModal(`
+    <h3 style="margin-top:0">框出脸和头发（不框就用整张）</h3>
+    <div class="cropper"><img src="${src}"><div class="sel" hidden></div></div>
+    <div class="row wrap">
+      <input id="faceName" placeholder="模特名字">
+      <input id="faceDesc" class="grow" placeholder="特征备注（英文更好，例如 tiny mole on left cheek, reddish-brown waves）">
+      <button id="faceSave" class="primary" style="width:auto">保存模特</button>
+    </div>`);
+  const img = body.querySelector('img');
+  const box = body.querySelector('.sel');
+  let start = null, crop = null;
+  const pos = e => { const r = img.getBoundingClientRect(); return { x: Math.min(Math.max(e.clientX - r.left, 0), r.width), y: Math.min(Math.max(e.clientY - r.top, 0), r.height) }; };
+  const cropper = body.querySelector('.cropper');
+  cropper.addEventListener('mousedown', e => { e.preventDefault(); start = pos(e); });
+  window.onmousemove = e => {
+    if (!start) return;
+    const c = pos(e);
+    const x = Math.min(start.x, c.x), y = Math.min(start.y, c.y), w = Math.abs(c.x - start.x), h = Math.abs(c.y - start.y);
+    Object.assign(box.style, { left: x + 'px', top: y + 'px', width: w + 'px', height: h + 'px' });
+    box.hidden = false;
+    const k = img.naturalWidth / img.clientWidth;
+    crop = { x: x * k, y: y * k, w: w * k, h: h * k };
+  };
+  window.onmouseup = () => { start = null; };
+  body.querySelector('#faceSave').addEventListener('click', async () => {
+    await api('POST', `/api/projects/${state.p.id}/faces`, { source, dataUrl, crop, name: body.querySelector('#faceName').value, desc: body.querySelector('#faceDesc').value });
+    window.onmousemove = window.onmouseup = null;
+    closeModal();
+    state.p = await api('GET', `/api/projects/${state.p.id}`);
+    renderFaces();
+    toast('已保存模特');
+  });
+}
+
+// ---- ③ generate -------------------------------------------------------------
+
+function fillSelects() {
+  const m = state.meta;
+  const opts = (obj, sel) => Object.entries(obj).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('');
+  $('[name=shot]').innerHTML = opts(m.shots);
+  $('[name=flash]').innerHTML = opts(m.flashes);
+  $('[name=framing]').innerHTML = opts(m.framings);
+  $('[name=aspect]').innerHTML = m.sizes.map(s => `<option>${s}</option>`).join('');
+  $('[name=shot]').value = 'friend';
+  $('#post').innerHTML = Object.entries(m.postPresets).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('') + '<option value="none">不加后期</option>';
+  $('#post').value = m.defaultPost;
+  $('#model').innerHTML = m.models.map(x => `<option value="${x.id}">${esc(x.label)}</option>`).join('');
+  $('#batchList').innerHTML = Object.entries(m.presets).map(([k, v]) => `<label class="check"><input type="checkbox" value="${k}">${esc(v.label)}</label>`).join('');
+  $('#preset').innerHTML += Object.entries(m.presets).map(([k, v]) => `<option value="${k}">${esc(v.label)}</option>`).join('');
+  $('[name=face]').placeholder = m.defaultFace;
+}
+
+const formFields = () => Object.fromEntries(FIELDS.map(k => [k, $(`#genForm [name=${k}]`).value]));
+function setFields(f) { for (const k of FIELDS) { const el = $(`#genForm [name=${k}]`); if (k in f) el.value = f[k] ?? ''; else if (el.tagName === 'TEXTAREA' && k !== 'face') el.value = ''; } }
+
+async function rebuildPrompt() {
+  const { prompt } = await api('POST', '/api/prompt', formFields());
+  $('#promptBox').value = prompt;
+  state.promptDirty = false;
+  updateLen();
+  saveDraft();
+}
+const updateLen = () => ($('#promptLen').textContent = `${$('#promptBox').value.length} 字符${state.promptDirty ? ' · 已手改' : ''}`);
+
+let rebuildTimer;
+$('#genForm').addEventListener('input', () => {
+  if (state.promptDirty) { saveDraft(); return; }
+  clearTimeout(rebuildTimer);
+  rebuildTimer = setTimeout(rebuildPrompt, 300);
+});
+$('#genForm').addEventListener('change', () => { if (!state.promptDirty) rebuildPrompt(); });
+$('#promptBox').addEventListener('input', () => { state.promptDirty = true; updateLen(); saveDraft(); });
+$('#rebuild').addEventListener('click', () => { if (!state.promptDirty || confirm('会覆盖你手改的提示词，继续？')) rebuildPrompt(); });
+$('#preset').addEventListener('change', e => {
+  const pr = state.meta.presets[e.target.value];
+  if (!pr) return;
+  const { label, ...fields } = pr;
+  setFields({ ...fields, face: $('[name=face]').value });
+  state.promptDirty = false;
+  rebuildPrompt();
+});
+
+function saveDraft() {
+  if (!state.p) return;
+  localStorage.setItem('draft:' + state.p.id, JSON.stringify({ fields: formFields(), prompt: $('#promptBox').value, dirty: state.promptDirty, model: $('#model').value, count: $('#count').value, post: $('#post').value }));
+}
+function loadDraft() {
+  const d = JSON.parse(localStorage.getItem('draft:' + state.p.id) || 'null');
+  if (!d) { setFields({ shot: 'friend', flash: 'off', framing: 'half', aspect: '3:4' }); rebuildPrompt(); return; }
+  setFields(d.fields);
+  $('#promptBox').value = d.prompt;
+  state.promptDirty = d.dirty;
+  if (d.model) $('#model').value = d.model;
+  if (d.count) $('#count').value = d.count;
+  if (d.post && [...$('#post').options].some(o => o.value === d.post)) $('#post').value = d.post;
+  updateLen();
+}
+$('#model').addEventListener('change', saveDraft);
+$('#count').addEventListener('change', saveDraft);
+$('#post').addEventListener('change', saveDraft);
+
+$('#genBtn').addEventListener('click', async () => {
+  const model = state.meta.models.find(m => m.id === $('#model').value);
+  if (!model.refs && (state.p.moodboard.length || $('#genFace').value)) toast('grok 不用参考图，moodboard 和模特会被忽略');
+  await api('POST', `/api/projects/${state.p.id}/generate`, {
+    prompt: $('#promptBox').value, fields: formFields(), aspect: $('[name=aspect]').value,
+    model: model.id, count: $('#count').value, faceId: $('#genFace').value || null, post: $('#post').value,
+  });
+  state.p = await api('GET', `/api/projects/${state.p.id}`);
+  toast('已提交，出图约 40–60 秒');
+  renderJobs(); renderGallery(); poll();
+});
+
+function jobHtml(j, { withOutputs = true } = {}) {
+  const p = state.p;
+  const face = p.faces.find(f => f.id === j.faceId);
+  const out = j.outputs.filter(o => !$('#onlyStar').checked || o.star > 0);
+  const waiting = ['queued', 'running'].includes(j.status) ? j.count - j.outputs.length : 0;
+  const statusText = { queued: '排队', running: '生成中', done: '完成', partial: '部分失败', failed: '失败' }[j.status];
+  return `<div class="job" data-id="${j.id}">
+    <div class="job-head"><span class="status ${j.status}">${statusText}</span>
+      <b>${j.type === 'swap' ? '换脸' : '出图'}</b> ${esc(j.model)} · ${j.outputs.length}/${j.count} 张 · ${j.createdAt.slice(5, 16).replace('T', ' ')}
+      ${face ? `· 模特 ${esc(face.name)}` : ''} ${j.refs.length ? `· 参考图 ${j.refs.length} 张` : ''}
+      ${j.source ? `<img src="${fileUrl(j.source)}" style="height:36px;border-radius:4px" title="底图">` : ''}
+      ${['done', 'partial', 'failed'].includes(j.status) ? '<button class="rerun" data-act="rerun">再来一批</button>' : ''}
+      ${['partial', 'failed'].includes(j.status) ? `<button class="rerun" data-act="retry" data-count="${j.count - j.outputs.length}">重试失败的 ${j.count - j.outputs.length} 张</button>` : ''}</div>
+    ${(j.errors || []).map(e => `<div class="err">⚠ ${esc(e)}</div>`).join('')}
+    <details><summary>提示词</summary><pre>${esc(j.finalPrompt)}</pre>${j.type === 'gen' ? '<button data-act="reuse">载入到出图表单</button>' : ''}</details>
+    ${withOutputs ? `<div class="cards" style="margin-top:8px">${out.map(o => outputCard(o)).join('')}${Array.from({ length: waiting }, () => '<div class="card"><div class="placeholder">生成中…</div></div>').join('')}</div>` : ''}
+  </div>`;
+}
+
+function outputCard(o) {
+  const src = fileUrl(!$('#showRaw').checked && o.final ? o.final : o.file);
+  return `<div class="card ${state.selected.has(o.file) ? 'selected' : ''}" data-file="${esc(o.file)}">
+    <img src="${src}" loading="lazy" data-act="zoom">
+    <div class="body">
+      <div class="row" style="margin:0"><span class="stars">${[1, 2, 3, 4, 5].map(n => `<span data-star="${n}" class="${n <= o.star ? 'on' : ''}">★</span>`).join('')}</span>
+      <span class="grow"></span><label class="check"><input type="checkbox" data-act="sel" ${state.selected.has(o.file) ? 'checked' : ''}>选</label></div>
+      <div class="actions">
+        <button data-act="compare">对比原图</button><button data-act="swap">换脸</button><button data-act="face">设为模特</button><button data-act="open">文件夹</button>
+        <select data-act="repost" title="换后期（不重新出图）">${repostOptions(o)}</select>
+      </div>
+    </div></div>`;
+}
+
+function repostOptions(o) {
+  const cur = o.final ? (o.post || 'soft') : 'none';
+  const all = { ...state.meta.postPresets, none: '不加后期' };
+  return Object.entries(all).map(([k, v]) => `<option value="${k}" ${k === cur ? 'selected' : ''}>后期：${esc(v)}</option>`).join('');
+}
+
+function renderJobs() {
+  const recent = state.p.jobs.slice(-4).reverse();
+  $('#genJobs').innerHTML = recent.length ? '<h4>最近任务</h4>' + recent.map(j => jobHtml(j)).join('') : '';
+}
+
+// ---- ④ gallery --------------------------------------------------------------
+
+function renderGallery() {
+  const jobs = [...state.p.jobs].reverse();
+  $('#gallery').innerHTML = jobs.length ? jobs.map(j => jobHtml(j)).join('') : '<p class="hint">还没有出图。</p>';
+  $('#selCount').textContent = state.selected.size ? `已选 ${state.selected.size} 张` : '';
+}
+$('#showRaw').addEventListener('change', () => { renderGallery(); renderJobs(); });
+$('#onlyStar').addEventListener('change', renderGallery);
+
+async function onOutputClick(e) {
+  const card = e.target.closest('.card[data-file]');
+  const jobEl = e.target.closest('.job');
+  if (['rerun', 'retry'].includes(e.target.dataset.act) && jobEl) {
+    e.target.disabled = true;
+    await api('POST', `/api/projects/${state.p.id}/jobs/${jobEl.dataset.id}/rerun`, e.target.dataset.act === 'retry' ? { count: e.target.dataset.count } : {});
+    state.p = await api('GET', `/api/projects/${state.p.id}`);
+    toast('已重新提交');
+    renderJobs(); renderGallery(); poll();
+    return;
+  }
+  if (e.target.dataset.act === 'reuse' && jobEl) {
+    const j = state.p.jobs.find(x => x.id === jobEl.dataset.id);
+    if (j.fields) setFields(j.fields);
+    $('#promptBox').value = j.prompt;
+    state.promptDirty = true;
+    $('#model').value = j.model;
+    $('#genFace').value = j.faceId || '';
+    updateLen(); saveDraft(); setTab('gen');
+    return;
+  }
+  if (!card) return;
+  const file = card.dataset.file;
+  const o = state.p.jobs.flatMap(j => j.outputs).find(x => x.file === file);
+  const act = e.target.dataset.act;
+  if (e.target.dataset.star) {
+    const n = Number(e.target.dataset.star);
+    Object.assign(o, await api('POST', `/api/projects/${state.p.id}/star`, { file, star: o.star === n ? 0 : n }));
+    renderGallery(); renderJobs();
+  } else if (act === 'sel') {
+    e.target.checked ? state.selected.add(file) : state.selected.delete(file);
+    card.classList.toggle('selected', e.target.checked);
+    $('#selCount').textContent = state.selected.size ? `已选 ${state.selected.size} 张` : '';
+  } else if (act === 'zoom') zoom(e.target.src);
+  else if (act === 'compare') compareDialog(o);
+  else if (act === 'swap') swapDialog(o);
+  else if (act === 'face') cropDialog({ source: o.file });
+  else if (act === 'open') api('POST', `/api/projects/${state.p.id}/open`, { rel: o.file });
+}
+$('#gallery').addEventListener('click', onOutputClick);
+$('#genJobs').addEventListener('click', onOutputClick);
+
+async function onRepost(e) {
+  if (e.target.dataset.act !== 'repost') return;
+  const file = e.target.closest('.card[data-file]').dataset.file;
+  e.target.disabled = true;
+  const o = state.p.jobs.flatMap(j => j.outputs).find(x => x.file === file);
+  try {
+    Object.assign(o, await api('POST', `/api/projects/${state.p.id}/repost`, { file, preset: e.target.value }));
+    toast('后期已更新');
+  } finally { renderGallery(); renderJobs(); }
+}
+$('#gallery').addEventListener('change', onRepost);
+$('#genJobs').addEventListener('change', onRepost);
+
+function compareDialog(o) {
+  const refs = [...new Set([...state.p.moodboard, ...state.p.cases.flatMap(c => c.images)])];
+  if (!refs.length) return toast('还没有案例图可对比', true);
+  const mine = fileUrl(o.final || o.file);
+  const body = openModal(`
+    <div class="row"><label>对比案例图 <select id="cmpSel">${refs.map((r, i) => `<option value="${esc(r)}">${i < state.p.moodboard.length ? '★ ' : ''}${esc(r.split('/').pop())}</option>`).join('')}</select></label></div>
+    <div class="compare"><figure><img id="cmpRef" src="${fileUrl(refs[0])}"><figcaption>案例</figcaption></figure><figure><img src="${mine}"><figcaption>我的</figcaption></figure></div>`);
+  body.querySelector('#cmpSel').addEventListener('change', e => (body.querySelector('#cmpRef').src = fileUrl(e.target.value)));
+}
+
+function swapDialog(o) {
+  if (!state.p.faces.length) { toast('先在「② 模特」里加一个模特', true); return setTab('model'); }
+  const body = openModal(`
+    <h3 style="margin-top:0">换成固定模特</h3>
+    <div class="row"><img src="${fileUrl(o.final || o.file)}" style="height:160px;border-radius:6px"> →
+      ${state.p.faces.map((f, i) => `<label class="check"><input type="radio" name="sf" value="${f.id}" ${i === 0 ? 'checked' : ''}><img src="${fileUrl(f.file)}" style="height:100px;border-radius:6px">${esc(f.name)}</label>`).join('')}</div>
+    <div class="row"><label>张数 <select id="swapCount"><option>1</option><option selected>2</option><option>3</option></select></label>
+    <button id="swapGo" class="primary" style="width:auto">开始换脸</button></div>
+    <p class="hint">闭眼、侧脸、逆光的底图换完容易认不出，会自动要求睁眼；不满意就多出几张挑。</p>`);
+  body.querySelector('#swapGo').addEventListener('click', async () => {
+    await api('POST', `/api/projects/${state.p.id}/swap`, { source: o.file, faceId: body.querySelector('[name=sf]:checked').value, count: body.querySelector('#swapCount').value, model: $('#model').value, post: $('#post').value });
+    closeModal();
+    state.p = await api('GET', `/api/projects/${state.p.id}`);
+    toast('换脸已提交');
+    renderGallery(); renderJobs(); poll();
+  });
+}
+
+$('#exportBtn').addEventListener('click', async () => {
+  if (!state.selected.size) return toast('先在图片上勾「选」', true);
+  const outputs = state.p.jobs.flatMap(j => j.outputs);
+  const files = [...state.selected].map(f => { const o = outputs.find(x => x.file === f); return !$('#showRaw').checked && o?.final ? o.final : f; });
+  const body = openModal(`
+    <h3 style="margin-top:0">导出 ${files.length} 张</h3>
+    <p class="hint">会复制原图、生成拼图，并放一份「发布前必读.txt」。</p>
+    <label class="check"><input id="aiLabel" type="checkbox" checked> 拼图右下角加「AI 生成」标识</label>
+    <p class="hint">抖音、小红书都要求主动声明 AI 生成内容：发布时记得勾选平台的「AI 生成」声明。单张原图不会加角标。</p>
+    <button id="expGo" class="primary">导出并打开文件夹</button>`);
+  body.querySelector('#expGo').addEventListener('click', async () => {
+    const r = await api('POST', `/api/projects/${state.p.id}/export`, { files, aiLabel: body.querySelector('#aiLabel').checked });
+    closeModal();
+    toast('已导出到 ' + r.dir);
+  });
+});
+
+// ---- polling ----------------------------------------------------------------
+
+let pollTimer;
+function poll() {
+  clearTimeout(pollTimer);
+  pollTimer = setTimeout(async () => {
+    if (!state.p) return;
+    const busy = state.p.jobs.some(j => ['queued', 'running'].includes(j.status));
+    if (!busy) return;
+    const fresh = await fetch(`/api/projects/${state.p.id}`).then(r => r.json()).catch(() => null);
+    if (fresh && fresh.id === state.p.id) {
+      const before = JSON.stringify(state.p.jobs);
+      state.p = fresh;
+      $('#queueInfo').textContent = `中转站：${fresh.queue.active} 个进行中，${fresh.queue.pending} 个排队`;
+      if (JSON.stringify(fresh.jobs) !== before) { renderJobs(); if (state.tab === 'gallery') renderGallery(); }
+    }
+    poll();
+  }, 2500);
+}
+
+// ---- boot -------------------------------------------------------------------
+
+state.meta = await api('GET', '/api/meta');
+renderHealth();
+setInterval(renderHealth, 60000);
+fillSelects();
+await loadProjects();
+const last = localStorage.getItem('lastProject');
+if (last && $(`#projects li[data-id="${last}"]`)) { await openProject(last); poll(); }
+
+// ---- connection health --------------------------------------------------------
+
+const light = (ok, warn) => `<span class="dot ${ok ? (warn ? 'warn' : 'ok') : 'bad'}"></span>`;
+
+let lastLong = null; // keep the last long-connection result visible across the periodic refresh
+async function renderHealth(long = false) {
+  const h = await fetch('/api/health' + (long ? '?long=1' : '')).then(r => r.json()).catch(() => null);
+  if (!h || !h.relay) { $('#health').innerHTML = light(false) + '本地服务没响应'; return; }
+  if (h.long) lastLong = { ...h.long, at: new Date().toTimeString().slice(0, 5) };
+  h.long = lastLong;
+  const cut = h.gen.cuts > 0;
+  const svc = (name, x) => `<div>${light(x.ok)}${name} ${x.ok ? x.ms + 'ms' : '连不上（' + (x.error || x.status) + '）'}</div>`;
+  let html = svc('中转站', h.relay) + svc('TikHub', h.tikhub) +
+    `<div>${light(!cut, !h.gen.lastOkAt)}出图连接 ${cut ? '最近被掐断 ' + h.gen.cuts + ' 次' : h.gen.lastOkAt ? '正常' : '本次还没出过图'}</div>`;
+  if (cut) html += '<div class="tip">本机代理在掐断长连接：在 FlClash/Clash 里把 duckdns.org 设为 DIRECT、换节点或关掉 TUN。</div>';
+  if (h.long) html += `<div>${light(h.long.ok)}长连接 ${h.long.ok ? '能撑住 15 秒' : h.long.sec + ' 秒就断了（' + (h.long.error || h.long.status) + '）'} <span class="muted">${h.long.at}</span></div>`;
+  if (h.long && !h.long.ok) html += '<div class="tip">长连接撑不住，出图（约 40 秒）一定会失败，先修代理。</div>';
+  $('#health').innerHTML = html;
+}
+
+$('#longTest').addEventListener('click', async e => {
+  e.target.disabled = true;
+  e.target.textContent = '测试中…（最多 30 秒）';
+  try { await renderHealth(true); } finally { e.target.disabled = false; e.target.textContent = '测一下长连接（15 秒）'; }
+});
+
+// ---- batch ---------------------------------------------------------------------
+
+$('#batchBtn').addEventListener('click', async () => {
+  const presets = $$('#batchList input:checked').map(i => i.value);
+  if (!presets.length) return toast('先勾选场景', true);
+  const jobs = await api('POST', `/api/projects/${state.p.id}/batch`, {
+    presets, model: $('#model').value, count: $('#count').value, faceId: $('#genFace').value || null, post: $('#post').value,
+    aspect: $('[name=aspect]').value, face: $('[name=face]').value, extra: $('[name=extra]').value,
+  });
+  state.p = await api('GET', `/api/projects/${state.p.id}`);
+  toast(`已提交 ${jobs.length} 个场景，共 ${jobs.length * Number($('#count').value)} 张，中转站同时跑 3 张`);
+  renderJobs(); renderGallery(); poll();
+});
+
+// ---- style cards ---------------------------------------------------------------
+
+const styleUrl = (st, sub, name) => `/styles/${st.id}/${sub}/${encodeURIComponent(name)}`;
+
+async function renderStyles() {
+  const list = await api('GET', '/api/styles');
+  $('#styles').innerHTML = list.length ? list.map(st => `
+    <div class="card" data-id="${st.id}">
+      <div class="style-thumbs">${[...st.refs.map(n => styleUrl(st, 'refs', n)), ...st.best.map(n => styleUrl(st, 'best', n))].slice(0, 6).map(u => `<img src="${u}" loading="lazy">`).join('')}</div>
+      <div class="body"><b>${esc(st.name)}</b>
+        <div class="muted">参考图 ${st.refs.length} · 高星成品 ${st.best.length} · ${st.updatedAt.slice(0, 10)}</div>
+        ${st.notes ? `<div class="muted">${esc(st.notes)}</div>` : ''}
+        <div class="actions"><button data-act="apply">套用到当前项目</button><button data-act="del">删除</button></div>
+      </div></div>`).join('') : '<p class="hint">还没有风格卡。在「③ 出图」调好一套满意的设置后，点「把当前设置存为风格卡」。</p>';
+}
+
+$('#styles').addEventListener('click', async e => {
+  const card = e.target.closest('.card[data-id]');
+  if (!card) return;
+  if (e.target.dataset.act === 'del') {
+    if (!confirm('删除这张风格卡？')) return;
+    await api('DELETE', `/api/styles/${card.dataset.id}`);
+    renderStyles();
+  } else if (e.target.dataset.act === 'apply') {
+    const { style } = await api('POST', `/api/projects/${state.p.id}/styles/${card.dataset.id}/apply`);
+    state.p = await api('GET', `/api/projects/${state.p.id}`);
+    if (style.fields && Object.keys(style.fields).length) setFields(style.fields);
+    if (style.model) $('#model').value = style.model;
+    if (style.post) $('#post').value = style.post;
+    state.promptDirty = false;
+    await rebuildPrompt();
+    renderCases(); renderMoodbars();
+    setTab('gen');
+    toast(`已套用「${style.name}」：moodboard 和表单都填好了`);
+  }
+});
+
+$('#saveStyleBtn').addEventListener('click', async () => {
+  const list = await api('GET', '/api/styles');
+  const stars = state.p.jobs.flatMap(j => j.outputs).filter(o => o.star >= 4).length;
+  const body = openModal(`
+    <h3 style="margin-top:0">存为风格卡</h3>
+    <p class="hint">会保存：moodboard ${state.p.moodboard.length} 张、本项目 4 星以上的图 ${Math.min(stars, 6)} 张、当前表单、模型和后期。</p>
+    <label>名字 <input id="stName" style="width:100%" placeholder="例如 韩女街拍·手机轻闪"></label>
+    <label>备注（适合什么场景、踩过的坑）<textarea id="stNotes" rows="3"></textarea></label>
+    <label>覆盖已有风格卡 <select id="stUpdate"><option value="">— 新建 —</option>${list.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('')}</select></label>
+    <button id="stSave" class="primary">保存</button>`);
+  body.querySelector('#stSave').addEventListener('click', async () => {
+    const st = await api('POST', `/api/projects/${state.p.id}/styles`, {
+      name: body.querySelector('#stName').value, notes: body.querySelector('#stNotes').value, updateId: body.querySelector('#stUpdate').value || null,
+      fields: formFields(), post: $('#post').value, model: $('#model').value,
+    });
+    closeModal();
+    toast(`已保存风格卡「${st.name}」`);
+  });
+});
