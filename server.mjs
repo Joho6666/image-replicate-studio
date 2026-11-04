@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { PORT, ROOT, loadKeys, loadTikhub } from './lib/config.mjs';
-import { listProjects, createProject, getProject, saveProject, projectDir, resolveIn, relTo, newId } from './lib/store.mjs';
+import { listProjects, createProject, getProject, saveProject, deleteProject, projectDir, resolveIn, relTo, newId } from './lib/store.mjs';
+import { listClients, getClient, createClient, updateClient, requireConsent, addPhoto, removePhoto, markOrder, markDelivered, deleteClient, clientDir, TYPES } from './lib/clients.mjs';
 import { fetchCase } from './lib/douyin.mjs';
 import { MODELS, SIZES, generateImage, explainError, queueState, connStats } from './lib/relay.mjs';
 import { asyncAvailable, originOf } from './lib/async-relay.mjs';
@@ -183,8 +184,10 @@ function startGenJob(p, b) {
   need(!b.faceId || face, '模特不存在');
   const moodboard = (Array.isArray(b.moodboard) ? b.moodboard : p.moodboard).slice(0, 3);
   moodboard.forEach(r => resolveIn(p, r));
-  const refs = model.refs ? [...(face ? [face.file] : []), ...moodboard] : [];
-  const finalPrompt = model.refs ? composePrompt(b.prompt, { hasFace: !!face, moodboard: moodboard.length }) : b.prompt;
+  const faceFiles = face ? [face.file, ...(face.extra || [])] : [];
+  const bodyFiles = face && b.includeBody !== false ? (p.bodyRefs || []).slice(0, 2) : [];
+  const refs = model.refs ? [...faceFiles, ...bodyFiles, ...moodboard] : [];
+  const finalPrompt = model.refs ? composePrompt(b.prompt, { hasFace: !!face, faceCount: faceFiles.length, bodyCount: bodyFiles.length, moodboard: moodboard.length }) : b.prompt;
   return startJob(p, {
     type: 'gen', model: model.id, aspect: b.aspect || '3:4', size: SIZES[b.aspect] || SIZES['3:4'], count,
     post: postKey(b.post), faceId: face?.id || null, refs, prompt: b.prompt, finalPrompt, fields: b.fields || null,
@@ -269,7 +272,9 @@ route('POST', '/api/projects/:id/repost', async (req, { p }) => {
 });
 
 route('POST', '/api/projects/:id/export', async (req, { p }) => {
-  const { files, cols, aiLabel = true } = await readJson(req);
+  const { files, cols, aiLabel = true, checked } = await readJson(req);
+  // Customer work only leaves the app after the quality checklist is confirmed.
+  need(!p.clientId || checked === true, '客户订单要先在导出弹窗里勾完质检清单');
   need(Array.isArray(files) && files.length, '先勾选要导出的图');
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '_').slice(0, 15);
   const outDir = path.join(projectDir(p.id), 'exports', stamp);
@@ -303,6 +308,56 @@ route('POST', '/api/projects/:id/open', async (req, { p }) => {
   const abs = resolveIn(p, rel || '.');
   openFolder(fs.existsSync(abs) && fs.statSync(abs).isFile() ? path.dirname(abs) : abs);
   return { ok: true };
+});
+
+// ---- clients ------------------------------------------------------------------
+
+route('GET', '/api/clients', () => ({ types: TYPES, clients: listClients() }));
+route('POST', '/api/clients', async req => createClient(await readJson(req)));
+route('GET', '/api/clients/:cid', (req, { cid }) => { const c = getClient(cid); need(c, '客户不存在', 404); return c; });
+route('PATCH', '/api/clients/:cid', async (req, { cid }) => updateClient(cid, await readJson(req)));
+
+route('POST', '/api/clients/:cid/photos', async (req, { cid }) => {
+  const { kind, dataUrl } = await readJson(req);
+  const m = /^data:image\/[\w+.-]+;base64,(.+)$/.exec(dataUrl || '');
+  need(m, '只支持图片');
+  const buf = Buffer.from(m[1], 'base64');
+  return addPhoto(cid, kind, buf, imageExt(buf));
+});
+route('DELETE', '/api/clients/:cid/photos', async (req, { cid }) => { const { kind, file } = await readJson(req); return removePhoto(cid, kind, file); });
+route('POST', '/api/clients/:cid/delivered', (req, { cid }) => markDelivered(cid));
+
+// New order = a project linked to the client: faces become one face pack, body photos become reference photos.
+route('POST', '/api/clients/:cid/orders', async (req, { cid }) => {
+  const { name } = await readJson(req);
+  const c = getClient(cid);
+  need(c, '客户不存在', 404);
+  try { requireConsent(c); } catch (e) { throw new HttpError(400, e.message); }
+  need(c.faces.length, '先上传至少 1 张脸部照片');
+  const p = createProject(name || `${c.name} · ${new Date().toISOString().slice(0, 10)}`, { clientId: c.id, bodyRefs: [] });
+  const copy = (rel, sub, tag) => {
+    const dst = path.join(projectDir(p.id), sub, `${tag}_${path.basename(rel)}`);
+    fs.mkdirSync(path.dirname(dst), { recursive: true });
+    fs.copyFileSync(path.join(clientDir(c.id), rel), dst);
+    return relTo(p, dst);
+  };
+  const files = c.faces.map(r => copy(r, 'faces', 'client'));
+  p.faces.push({ id: newId('f'), name: c.name, desc: '', file: files[0], extra: files.slice(1, 3), createdAt: new Date().toISOString() });
+  p.bodyRefs = c.bodies.slice(0, 2).map(r => copy(r, 'refs/body', 'body'));
+  saveProject(p);
+  markOrder(c.id, p.id);
+  return p;
+});
+
+// Remove the customer's photos, record and (optionally) every order they produced.
+route('DELETE', '/api/clients/:cid', async (req, { cid }) => {
+  const c = getClient(cid);
+  need(c, '客户不存在', 404);
+  const { purgeProjects } = await readJson(req);
+  if (purgeProjects) for (const pid of c.orders) deleteProject(pid);
+  else for (const pid of c.orders) { const p = getProject(pid); if (p) { p.faces = []; p.bodyRefs = []; fs.rmSync(path.join(projectDir(pid), 'faces'), { recursive: true, force: true }); fs.rmSync(path.join(projectDir(pid), 'refs', 'body'), { recursive: true, force: true }); saveProject(p); } }
+  deleteClient(cid);
+  return { ok: true, purged: !!purgeProjects };
 });
 
 // ---- health ------------------------------------------------------------------
@@ -380,6 +435,14 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   const pathname = decodeURIComponent(url.pathname);
   try {
+    if (pathname.startsWith('/cfiles/')) {
+      const [, , cid, ...rest] = pathname.split('/');
+      need(getClient(cid), '客户不存在', 404);
+      const base = clientDir(cid);
+      const abs = path.resolve(base, rest.join('/'));
+      need(abs.startsWith(base + path.sep), '非法路径', 403);
+      return serveFile(res, abs);
+    }
     if (pathname.startsWith('/styles/')) {
       const [, , sid, ...rest] = pathname.split('/');
       need(getStyle(sid), '风格卡不存在', 404);

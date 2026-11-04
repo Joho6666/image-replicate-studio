@@ -13,6 +13,7 @@
     <input id="newName" placeholder="新项目名，例如 韩女街拍">
     <button id="newBtn">新建</button>
   </div>
+  <button id="clientsBtn" class="ghost small clients-btn">👥 客户管理（长期 / 散单）</button>
   <ul id="projects"></ul>
   <div id="health" class="health"></div>
   <button id="longTest" class="ghost small">测一下长连接（15 秒）</button>
@@ -21,6 +22,10 @@
 
 <main id="main">
   <div id="empty" class="empty">左侧新建或选择一个项目</div>
+  <div id="clientsView" hidden>
+    <header class="ws-head"><h2 style="margin:0">客户管理</h2><span class="grow"></span><button id="newClientBtn" class="primary" style="width:auto;margin:0">＋ 新建客户</button></header>
+    <div id="clientsList"></div>
+  </div>
   <div id="workspace" hidden>
     <header class="ws-head">
       <input id="projName" class="proj-name">

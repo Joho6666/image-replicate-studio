@@ -28,8 +28,12 @@ test('reference preamble covers face and moodboard combinations', () => {
   assert.match(referencePreamble({ moodboard: 1 }), /reference photo is a style moodboard/);
   const both = referencePreamble({ hasFace: true, moodboard: 2 });
   assert.match(both, /^The first reference photo shows the model/);
-  assert.match(both, /The other 2 reference photos are a style moodboard/);
-  assert.match(both, /keep the model from the first photo/);
+  assert.match(both, /The last 2 reference photos are a style moodboard/);
+  assert.match(both, /keep the model in the new setting/);
+  const pack = referencePreamble({ hasFace: true, faceCount: 3, bodyCount: 2, moodboard: 1 });
+  assert.match(pack, /^The first 3 reference photos all show the same real person/);
+  assert.match(pack, /The next 2 reference photos show her real body shape.*do not slim/);
+  assert.match(pack, /The last 1 reference photo is a style moodboard/);
   assert.equal(composePrompt('X', {}), 'X');
 });
 

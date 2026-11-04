@@ -35,7 +35,7 @@ const zoom = src => openModal(`<div class="zoom"><img src="${src}"></div>`);
 
 async function loadProjects() {
   const list = await api('GET', '/api/projects');
-  $('#projects').innerHTML = list.map(p => `<li data-id="${p.id}" class="${state.p?.id === p.id ? 'active' : ''}">${esc(p.name)}<small>${p.createdAt.slice(0, 10)} · ${p.jobs} 批</small></li>`).join('');
+  $('#projects').innerHTML = list.map(p => `<li data-id="${p.id}" class="${state.p?.id === p.id ? 'active' : ''}">${p.clientId ? '👥 ' : ''}${esc(p.name)}<small>${p.createdAt.slice(0, 10)} · ${p.jobs} 批</small></li>`).join('');
 }
 
 $('#projects').addEventListener('click', e => { const li = e.target.closest('li'); if (li) openProject(li.dataset.id); });
@@ -134,7 +134,9 @@ function renderMoodbars() {
   const mb = state.p.moodboard;
   const html = mb.length ? `<span class="muted">moodboard：</span>${mb.map(r => `<img src="${fileUrl(r)}">`).join('')}` : '<span class="muted">没选 moodboard（纯文字出图）</span>';
   $('#moodboardBar').innerHTML = html;
-  $('#genRefs').innerHTML = html;
+  const body = state.p.bodyRefs || [];
+  const bodyHtml = body.length ? `<span class="muted">· 客户体型参考 ${body.length} 张（选了模特会自动带上）：</span>${body.map(r => `<img src="${fileUrl(r)}">`).join('')}` : '';
+  $('#genRefs').innerHTML = html + bodyHtml;
 }
 
 // ---- ② model faces ----------------------------------------------------------
@@ -452,14 +454,17 @@ $('#exportBtn').addEventListener('click', async () => {
   if (!state.selected.size) return toast('先在图片上勾「选」', true);
   const outputs = state.p.jobs.flatMap(j => j.outputs);
   const files = [...state.selected].map(f => { const o = outputs.find(x => x.file === f); return !$('#showRaw').checked && o?.final ? o.final : f; });
+  const isClient = !!state.p.clientId;
   const body = openModal(`
     <h3 style="margin-top:0">导出 ${files.length} 张</h3>
     <p class="hint">会复制原图、生成拼图，并放一份「发布前必读.txt」。</p>
+    ${isClient ? `<fieldset class="consent"><legend>交付前质检（全部勾上才能导出）</legend>${CHECKLIST.map((t, i) => `<label class="check" style="display:flex"><input type="checkbox" class="qc"> ${esc(t)}</label>`).join('')}</fieldset>` : ''}
     <label class="check"><input id="aiLabel" type="checkbox" checked> 拼图右下角加「AI 生成」标识</label>
     <p class="hint">抖音、小红书都要求主动声明 AI 生成内容：发布时记得勾选平台的「AI 生成」声明。单张原图不会加角标。</p>
-    <button id="expGo" class="primary">导出并打开文件夹</button>`);
+    <button id="expGo" class="primary" ${isClient ? 'disabled' : ''}>导出并打开文件夹</button>`);
+  if (isClient) body.addEventListener('change', () => { body.querySelector('#expGo').disabled = ![...document.querySelectorAll('.qc')].every(c => c.checked); });
   body.querySelector('#expGo').addEventListener('click', async () => {
-    const r = await api('POST', `/api/projects/${state.p.id}/export`, { files, aiLabel: body.querySelector('#aiLabel').checked });
+    const r = await api('POST', `/api/projects/${state.p.id}/export`, { files, aiLabel: body.querySelector('#aiLabel').checked, checked: isClient ? true : undefined });
     closeModal();
     toast('已导出到 ' + r.dir);
   });
@@ -592,3 +597,139 @@ $('#saveStyleBtn').addEventListener('click', async () => {
     toast(`已保存风格卡「${st.name}」`);
   });
 });
+
+// ---- clients (long-term customers and one-off orders) -------------------------
+
+const clientPhoto = (c, rel) => `/cfiles/${c.id}/${rel.split('/').map(encodeURIComponent).join('/')}`;
+let clientState = { types: {}, clients: [] };
+
+function showClients() {
+  $('#empty').hidden = true;
+  $('#workspace').hidden = true;
+  $('#clientsView').hidden = false;
+  $$('#projects li').forEach(li => li.classList.remove('active'));
+  renderClients();
+}
+function hideClients() { $('#clientsView').hidden = true; }
+$('#clientsBtn').addEventListener('click', showClients);
+// Opening any project leaves the clients page.
+$('#projects').addEventListener('click', hideClients, true);
+
+async function renderClients() {
+  clientState = await api('GET', '/api/clients');
+  const { clients, types } = clientState;
+  const expired = clients.filter(c => c.expired);
+  $('#clientsList').innerHTML =
+    (expired.length ? `<div class="warnbar"><b>${expired.length} 位客户的资料已过保留期</b>：${expired.map(c => esc(c.name)).join('、')}。
+      <button id="purgeExpired">按约定清理这些客户的照片</button></div>` : '') +
+    (clients.length ? `<div class="cards">${clients.map(c => `
+      <div class="card client" data-id="${c.id}">
+        <div class="body">
+          <div class="row" style="margin:0"><b class="grow">${esc(c.name)}</b><span class="tag ${c.type}">${esc(types[c.type])}</span></div>
+          <div class="muted">${c.consent.given ? `已同意 ${esc(c.consent.date || '')}` : '<span class="bad">未确认同意</span>'} · 脸 ${c.faces.length} 张 · 身材 ${c.bodies.length} 张 · 订单 ${c.orders.length}</div>
+          <div class="muted ${c.expired ? 'bad' : ''}">${c.faces.length + c.bodies.length ? (c.expired ? '已过保留期，请清理' : `资料保留到 ${c.expiresAt.slice(0, 10)}（还剩 ${Math.max(c.daysLeft, 0)} 天）`) : '没有存照片'}</div>
+          ${c.notes ? `<div class="muted">${esc(c.notes)}</div>` : ''}
+          <div class="style-thumbs">${[...c.faces, ...c.bodies].slice(0, 6).map(r => `<img src="${clientPhoto(c, r)}" loading="lazy">`).join('')}</div>
+          <div class="actions"><button data-act="edit">档案 / 照片</button><button data-act="order">新建订单</button><button data-act="delivered">标记已交付</button><button data-act="del">删除客户</button></div>
+        </div></div>`).join('')}</div>` : '<p class="hint">还没有客户。点右上角「新建客户」。长期客户的照片会保留到约定期限，散单默认交付后 7 天提醒删除。</p>');
+}
+
+$('#newClientBtn').addEventListener('click', () => clientDialog(null));
+
+$('#clientsList').addEventListener('click', async e => {
+  if (e.target.id === 'purgeExpired') {
+    const list = clientState.clients.filter(c => c.expired);
+    if (!confirm(`将删除 ${list.map(c => c.name).join('、')} 的脸部/身材照片和客户档案，订单里的成品图保留。继续？`)) return;
+    for (const c of list) await api('DELETE', `/api/clients/${c.id}`, { purgeProjects: false });
+    toast('已清理到期客户的照片'); renderClients(); loadProjects();
+    return;
+  }
+  const card = e.target.closest('.client');
+  if (!card) return;
+  const c = clientState.clients.find(x => x.id === card.dataset.id);
+  const act = e.target.dataset.act;
+  if (act === 'edit') clientDialog(c);
+  else if (act === 'delivered') { await api('POST', `/api/clients/${c.id}/delivered`); toast(`已标记交付，保留期从今天起算 ${c.consent.retainDays} 天`); renderClients(); }
+  else if (act === 'order') {
+    if (!c.consent.given) return toast('先在「档案 / 照片」里确认客户已同意', true);
+    if (!c.faces.length) return toast('先上传至少 1 张脸部照片', true);
+    const p = await api('POST', `/api/clients/${c.id}/orders`, {});
+    hideClients();
+    await loadProjects();
+    await openProject(p.id);
+    setTab('gen');
+    toast(`已为 ${c.name} 新建订单：脸 ${c.faces.length} 张、体型参考 ${Math.min(c.bodies.length, 2)} 张已带入`);
+  } else if (act === 'del') {
+    const purge = confirm(`删除「${c.name}」的客户档案和照片。\n\n点「确定」：连同这个客户的所有订单和成品图一起删除。\n点「取消」：下一步可以选择只删照片、保留成品。`);
+    if (!purge && !confirm('只删除客户照片和档案，保留订单里的成品图？')) return;
+    await api('DELETE', `/api/clients/${c.id}`, { purgeProjects: purge });
+    toast('已删除'); renderClients(); loadProjects();
+  }
+});
+
+function clientDialog(c) {
+  const isNew = !c;
+  const cur = c || { name: '', type: 'oneoff', contact: '', notes: '', consent: { given: false, scope: '', retainDays: 7, showcase: false }, faces: [], bodies: [] };
+  const body = openModal(`
+    <h3 style="margin-top:0">${isNew ? '新建客户' : '客户档案：' + esc(cur.name)}</h3>
+    <div class="row wrap">
+      <label>名称 <input id="cName" value="${esc(cur.name)}" placeholder="昵称或编号即可"></label>
+      <label>类型 <select id="cType"><option value="oneoff">散单</option><option value="longterm">长期客户</option></select></label>
+      <label>联系方式 <input id="cContact" value="${esc(cur.contact)}" placeholder="微信号（选填）"></label>
+    </div>
+    <label>备注 <input id="cNotes" style="width:100%" value="${esc(cur.notes)}" placeholder="风格偏好、禁忌、交付要求"></label>
+    <fieldset class="consent"><legend>客户同意（没确认前不能上传照片、不能建订单）</legend>
+      <label class="check"><input id="cConsent" type="checkbox" ${cur.consent.given ? 'checked' : ''}> 客户已明确同意用其照片生成 AI 写真</label>
+      <label>用途和范围 <input id="cScope" style="width:100%" value="${esc(cur.consent.scope)}" placeholder="例如：仅生成个人写真，不对外展示，交付后删除照片"></label>
+      <div class="row wrap"><label>资料保留天数 <input id="cRetain" type="number" min="1" max="3650" style="width:90px" value="${cur.consent.retainDays}"></label>
+        <label class="check"><input id="cShow" type="checkbox" ${cur.consent.showcase ? 'checked' : ''}> 同意作为案例展示</label></div>
+      <p class="hint">散单默认 7 天、长期客户默认 180 天，从交付日（或最近一次下单）起算；到期后会在客户页提醒清理。同意最好留聊天记录。</p>
+    </fieldset>
+    <div id="cPhotos"></div>
+    <button id="cSave" class="primary">${isNew ? '创建客户' : '保存档案'}</button>`);
+  body.querySelector('#cType').value = cur.type;
+  const typeEl = body.querySelector('#cType'), retainEl = body.querySelector('#cRetain');
+  typeEl.addEventListener('change', () => { if (isNew) retainEl.value = typeEl.value === 'longterm' ? 180 : 7; });
+  const form = () => ({
+    name: body.querySelector('#cName').value, type: typeEl.value, contact: body.querySelector('#cContact').value, notes: body.querySelector('#cNotes').value,
+    consent: { given: body.querySelector('#cConsent').checked, scope: body.querySelector('#cScope').value, retainDays: Number(retainEl.value), showcase: body.querySelector('#cShow').checked },
+  });
+  const drawPhotos = () => {
+    const box = body.querySelector('#cPhotos');
+    if (isNew) { box.innerHTML = '<p class="hint">先创建客户并确认同意，再上传照片。</p>'; return; }
+    const kinds = [['face', '脸部照片（3–5 张：正脸、左右侧脸，不开美颜）', cur.faces, 8], ['body', '身材照片（2–3 张：全身，正面和侧面）', cur.bodies, 6]];
+    box.innerHTML = kinds.map(([k, label, list, max]) => `
+      <h4>${label} · ${list.length}/${max}</h4>
+      <div class="cphotos">${list.map(r => `<div class="cphoto"><img src="${clientPhoto(cur, r)}"><button data-kind="${k}" data-file="${esc(r)}" title="删除">×</button></div>`).join('')}
+        ${list.length < max ? `<label class="cadd">＋<input type="file" accept="image/*" multiple hidden data-up="${k}"></label>` : ''}</div>`).join('');
+  };
+  drawPhotos();
+  body.querySelector('#cPhotos').addEventListener('change', async e => {
+    const kind = e.target.dataset.up;
+    if (!kind) return;
+    if (!cur.consent.given) { e.target.value = ''; return toast('先勾选「客户已同意」并保存档案', true); }
+    for (const f of e.target.files) { try { Object.assign(cur, await api('POST', `/api/clients/${cur.id}/photos`, { kind, dataUrl: await readFile(f) })); } catch { break; } }
+    drawPhotos(); renderClients();
+  });
+  body.querySelector('#cPhotos').addEventListener('click', async e => {
+    const b = e.target.closest('button[data-file]');
+    if (!b) return;
+    Object.assign(cur, await api('DELETE', `/api/clients/${cur.id}/photos`, { kind: b.dataset.kind, file: b.dataset.file }));
+    drawPhotos(); renderClients();
+  });
+  body.querySelector('#cSave').addEventListener('click', async () => {
+    const data = form();
+    if (isNew) { const created = await api('POST', '/api/clients', data); closeModal(); toast('已创建，接着上传照片'); await renderClients(); clientDialog(created); }
+    else { Object.assign(cur, await api('PATCH', `/api/clients/${cur.id}`, data)); toast('已保存'); drawPhotos(); renderClients(); }
+  });
+}
+
+// ---- export checklist for customer orders ------------------------------------
+
+const CHECKLIST = [
+  '脸像客户本人（放大看过眼睛、鼻子、嘴，不是"像一个人"）',
+  '体型和客户身材照一致，没有被瘦身或夸张',
+  '手指、脚、饰品、背景文字和品牌 logo 没有异常',
+  '没有选用客户不同意的内容（服装、姿势、场景）',
+  '已告诉客户这是 AI 生成，发布时按平台要求声明',
+];
