@@ -6,6 +6,7 @@ import { PORT, ROOT, loadKeys, loadTikhub } from './lib/config.mjs';
 import { listProjects, createProject, getProject, saveProject, projectDir, resolveIn, relTo, newId } from './lib/store.mjs';
 import { fetchCase } from './lib/douyin.mjs';
 import { MODELS, SIZES, generateImage, explainError, queueState, connStats } from './lib/relay.mjs';
+import { asyncAvailable, originOf } from './lib/async-relay.mjs';
 import { buildPrompt, composePrompt, swapPrompt, extractAuthorPrompt, SHOTS, FLASH, FRAMING, PRESETS, DEFAULT_FACE } from './lib/prompt.mjs';
 import { listStyles, getStyle, saveStyle, deleteStyle, styleDir } from './lib/styles.mjs';
 import { postProcess, cropImage, grid, removeGrokWatermark, addAiLabel, POST_PRESETS, DEFAULT_POST } from './lib/post.mjs';
@@ -307,7 +308,7 @@ route('GET', '/api/health', async req => {
   const k = loadKeys();
   const th = await loadTikhub().catch(() => null);
   const [relay, tikhub] = await Promise.all([ping(k.base + '/models', { Authorization: 'Bearer ' + k.gpt }), th ? ping(th.base + '/') : { ok: false, error: '未配置' }]);
-  const out = { relay, tikhub, gen: connStats, queue: queueState() };
+  const out = { relay, tikhub, async: await asyncAvailable(originOf(k.base), { force: true }), gen: connStats, queue: queueState() };
   if (new URL(req.url, 'http://x').searchParams.get('long')) {
     const t0 = Date.now();
     try {

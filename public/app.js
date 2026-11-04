@@ -483,8 +483,9 @@ async function renderHealth(long = false) {
   const cut = h.gen.cuts > 0;
   const svc = (name, x) => `<div>${light(x.ok)}${name} ${x.ok ? x.ms + 'ms' : '连不上（' + (x.error || x.status) + '）'}</div>`;
   let html = svc('中转站', h.relay) + svc('TikHub', h.tikhub) +
+    `<div>${light(true, !h.async)}出图方式 ${h.async ? '异步（不怕代理断线）' : '同步（长连接，代理会断）'}</div>` +
     `<div>${light(!cut, !h.gen.lastOkAt)}出图连接 ${cut ? '最近被掐断 ' + h.gen.cuts + ' 次' : h.gen.lastOkAt ? '正常' : '本次还没出过图'}</div>`;
-  if (cut) html += '<div class="tip">本机代理在掐断长连接：在 FlClash/Clash 里把 duckdns.org 设为 DIRECT、换节点或关掉 TUN。</div>';
+  if (cut && !h.async) html += '<div class="tip">本机代理在掐断长连接：在 FlClash/Clash 里把 duckdns.org 设为 DIRECT、换节点或关掉 TUN。</div>';
   if (h.long) html += `<div>${light(h.long.ok)}长连接 ${h.long.ok ? '能撑住 15 秒' : h.long.sec + ' 秒就断了（' + (h.long.error || h.long.status) + '）'} <span class="muted">${h.long.at}</span></div>`;
   if (h.long && !h.long.ok) html += '<div class="tip">长连接撑不住，出图（约 40 秒）一定会失败，先修代理。</div>';
   $('#health').innerHTML = html;
