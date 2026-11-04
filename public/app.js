@@ -294,7 +294,7 @@ function jobHtml(j, { withOutputs = true } = {}) {
   const statusText = { queued: '排队', running: '生成中', done: '完成', partial: '部分失败', failed: '失败' }[j.status];
   return `<div class="job" data-id="${j.id}">
     <div class="job-head"><span class="status ${j.status}">${statusText}</span>
-      <b>${j.type === 'swap' ? '换脸' : '出图'}</b> ${esc(j.model)} · ${j.outputs.length}/${j.count} 张 · ${j.createdAt.slice(5, 16).replace('T', ' ')}
+      <b>${j.type === 'swap' ? '换脸' : j.type === 'relight' ? '打光：' + esc(state.meta.lights[j.light] || '') : '出图'}</b> ${esc(j.model)} · ${j.outputs.length}/${j.count} 张 · ${j.createdAt.slice(5, 16).replace('T', ' ')}
       ${face ? `· 模特 ${esc(face.name)}` : ''} ${j.refs.length ? `· 参考图 ${j.refs.length} 张` : ''}
       ${j.source ? `<img src="${fileUrl(j.source)}" style="height:36px;border-radius:4px" title="底图">` : ''}
       ${['done', 'partial', 'failed'].includes(j.status) ? '<button class="rerun" data-act="rerun">再来一批</button>' : ''}
@@ -313,7 +313,7 @@ function outputCard(o) {
       <div class="row" style="margin:0"><span class="stars">${[1, 2, 3, 4, 5].map(n => `<span data-star="${n}" class="${n <= o.star ? 'on' : ''}">★</span>`).join('')}</span>
       <span class="grow"></span><label class="check"><input type="checkbox" data-act="sel" ${state.selected.has(o.file) ? 'checked' : ''}>选</label></div>
       <div class="actions">
-        <button data-act="compare">对比原图</button><button data-act="swap">换脸</button><button data-act="face">设为模特</button><button data-act="open">文件夹</button>
+        <button data-act="compare">对比原图</button><button data-act="swap">换脸</button><button data-act="relight">重新打光</button><button data-act="face">设为模特</button><button data-act="open">文件夹</button>
         <select data-act="repost" title="换后期（不重新出图）">${repostOptions(o)}</select>
       </div>
     </div></div>`;
@@ -376,6 +376,7 @@ async function onOutputClick(e) {
   } else if (act === 'zoom') zoom(e.target.src);
   else if (act === 'compare') compareDialog(o);
   else if (act === 'swap') swapDialog(o);
+  else if (act === 'relight') relightDialog(o);
   else if (act === 'face') cropDialog({ source: o.file });
   else if (act === 'open') api('POST', `/api/projects/${state.p.id}/open`, { rel: o.file });
 }
@@ -403,6 +404,30 @@ function compareDialog(o) {
     <div class="row"><label>对比案例图 <select id="cmpSel">${refs.map((r, i) => `<option value="${esc(r)}">${i < state.p.moodboard.length ? '★ ' : ''}${esc(r.split('/').pop())}</option>`).join('')}</select></label></div>
     <div class="compare"><figure><img id="cmpRef" src="${fileUrl(refs[0])}"><figcaption>案例</figcaption></figure><figure><img src="${mine}"><figcaption>我的</figcaption></figure></div>`);
   body.querySelector('#cmpSel').addEventListener('change', e => (body.querySelector('#cmpRef').src = fileUrl(e.target.value)));
+}
+
+function relightDialog(o) {
+  const body = openModal(`
+    <h3 style="margin-top:0">重新打光（只改光，不改人物/姿势/背景）</h3>
+    <div class="row"><img src="${fileUrl(o.file)}" style="height:200px;border-radius:6px">
+      <div class="grow">
+        <label>灯型 <select id="rlLight">${Object.entries(state.meta.lights).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('')}</select></label>
+        <label>强度 <select id="rlStrength">${Object.entries(state.meta.strengths).map(([k, v]) => `<option value="${k}" ${k === 'normal' ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select></label>
+        <label>张数 <select id="rlCount"><option>1</option><option selected>2</option><option>3</option></select></label>
+        <label>补充（英文，可留空）<input id="rlExtra" style="width:100%" placeholder="例如 warm tungsten color, flash from slightly above"></label>
+      </div></div>
+    <p class="hint">用原图（未加后期）做编辑，出完后按你选的后期处理。提示词已内置「保持皮肤自然、不油光」。灯型思路来自 flash-photo-skill。</p>
+    <button id="rlGo" class="primary">开始重新打光</button>`);
+  body.querySelector('#rlGo').addEventListener('click', async () => {
+    await api('POST', `/api/projects/${state.p.id}/relight`, {
+      source: o.file, light: body.querySelector('#rlLight').value, strength: body.querySelector('#rlStrength').value,
+      count: body.querySelector('#rlCount').value, extra: body.querySelector('#rlExtra').value, model: $('#model').value, post: $('#post').value,
+    });
+    closeModal();
+    state.p = await api('GET', `/api/projects/${state.p.id}`);
+    toast('重新打光已提交');
+    renderGallery(); renderJobs(); poll();
+  });
 }
 
 function swapDialog(o) {

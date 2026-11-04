@@ -7,6 +7,7 @@ import { listProjects, createProject, getProject, saveProject, projectDir, resol
 import { fetchCase } from './lib/douyin.mjs';
 import { MODELS, SIZES, generateImage, explainError, queueState, connStats } from './lib/relay.mjs';
 import { asyncAvailable, originOf } from './lib/async-relay.mjs';
+import { LIGHTS, STRENGTH, relightPrompt } from './lib/relight.mjs';
 import { buildPrompt, composePrompt, swapPrompt, extractAuthorPrompt, SHOTS, FLASH, FRAMING, PRESETS, DEFAULT_FACE } from './lib/prompt.mjs';
 import { listStyles, getStyle, saveStyle, deleteStyle, styleDir } from './lib/styles.mjs';
 import { postProcess, cropImage, grid, removeGrokWatermark, addAiLabel, POST_PRESETS, DEFAULT_POST } from './lib/post.mjs';
@@ -101,6 +102,7 @@ route('GET', '/api/meta', () => ({
   flashes: Object.fromEntries(Object.entries(FLASH).map(([k, v]) => [k, v.label])),
   framings: Object.fromEntries(Object.entries(FRAMING).map(([k, v]) => [k, v.label])),
   presets: PRESETS,
+  lights: Object.fromEntries(Object.entries(LIGHTS).map(([k, v]) => [k, v.label])), strengths: STRENGTH,
   postPresets: Object.fromEntries(Object.entries(POST_PRESETS).map(([k, v]) => [k, v.label])), defaultPost: DEFAULT_POST,
 }));
 
@@ -225,6 +227,19 @@ route('POST', '/api/projects/:id/swap', async (req, { p }) => {
   return startJob(p, {
     type: 'swap', model: model.id, size: SIZES[b.aspect] || SIZES['3:4'], count: Math.min(Math.max(Number(b.count) || 1, 1), 4),
     post: postKey(b.post), faceId: face.id, source: b.source, refs: [b.source, face.file], prompt, finalPrompt: prompt,
+  });
+});
+
+// Re-light an existing output (edit pass on the source image; pose, outfit and background stay).
+route('POST', '/api/projects/:id/relight', async (req, { p }) => {
+  const b = await readJson(req);
+  resolveIn(p, b.source);
+  need(LIGHTS[b.light], '没有这种灯型');
+  const model = MODELS.find(m => m.id === b.model && m.refs) || MODELS[0];
+  const prompt = relightPrompt(b.light, { strength: b.strength, extra: b.extra || '' });
+  return startJob(p, {
+    type: 'relight', light: b.light, model: model.id, size: SIZES[b.aspect] || SIZES['3:4'], count: Math.min(Math.max(Number(b.count) || 1, 1), 4),
+    post: postKey(b.post), source: b.source, refs: [b.source], prompt, finalPrompt: prompt,
   });
 });
 
