@@ -309,12 +309,23 @@ route('POST', '/api/projects/:id/replica-recrop', async (req, { p }) => {
   return { original: b.original, file: relTo(p, cropped), top, bottom, auto: false };
 });
 
+// ⑦ 工作台: the node graph (image / model / prompt / replica / live / relight nodes and wires) is stored per project.
+route('GET', '/api/projects/:id/board', (req, { p }) => p.board || { nodes: [], edges: [], view: { x: 40, y: 40, k: 1 } });
+route('PUT', '/api/projects/:id/board', async (req, { p }) => {
+  const b = await readJson(req);
+  need(Array.isArray(b.nodes) && Array.isArray(b.edges), '工作台数据格式不对');
+  need(b.nodes.length <= 300 && b.edges.length <= 600, '节点太多');
+  p.board = { nodes: b.nodes, edges: b.edges, view: b.view || { x: 40, y: 40, k: 1 }, savedAt: new Date().toISOString() };
+  saveProject(p);
+  return { ok: true, savedAt: p.board.savedAt };
+});
+
 route('POST', '/api/projects/:id/replica', async (req, { p }) => {
   const b = await readJson(req);
   resolveIn(p, b.source);
   need(b.faceId && findFace(p, b.faceId), '先选一个模特');
   need(b.outfitMode !== 'change' || (b.outfit || '').trim(), '选了「换成指定衣服」要写衣服');
-  const prompt = buildReplicaPrompt({ outfitMode: b.outfitMode, outfit: b.outfit, identity: b.identity, hair: b.hair, removeUi: b.removeUi !== false, keepExpression: !!b.keepExpression });
+  const prompt = buildReplicaPrompt({ outfitMode: b.outfitMode, outfit: b.outfit, identity: b.identity, hair: b.hair, removeUi: b.removeUi !== false, keepExpression: !!b.keepExpression, extra: b.extra || '' });
   return startGenJob(p, { ...b, prompt, moodboard: [b.source], aspect: '3:4', count: b.count || 2, includeBody: b.includeBody !== false && !!(p.bodyRefs || []).length, fields: null, replica: { source: b.source, outfitMode: b.outfitMode || 'keep' } });
 });
 

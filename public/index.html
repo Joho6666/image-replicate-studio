@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>图片复刻 Studio</title>
 <link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/board.css">
 </head>
 <body>
 <aside id="sidebar">
@@ -36,6 +37,7 @@
         <button data-tab="gallery">④ 画廊</button>
         <button data-tab="styles">⑤ 风格卡</button>
         <button data-tab="replica">⑥ 复刻台</button>
+        <button data-tab="board">⑦ 工作台</button>
       </nav>
       <button id="openDir" class="ghost">打开项目文件夹</button>
     </header>
@@ -111,6 +113,24 @@
       </div>
     </section>
 
+    <section id="tab-board" class="tab" hidden>
+      <div id="bdWrap">
+        <aside id="bdAssets">
+          <div class="bd-tabs"><button data-src="outputs" class="active">成品</button><button data-src="refs">参考图</button><button data-src="faces">模特</button></div>
+          <p class="hint">拖到右边画布上；也可以直接把电脑里的图片拖进画布。</p>
+          <div id="bdAssetList"></div>
+        </aside>
+        <div id="bdMain">
+          <div id="bdBar">
+            <button data-add="prompt">＋ 提示词</button><button data-add="model">＋ 模特</button><button data-add="replica" class="bd-accent">＋ 复刻 / 生成</button><button data-add="relight">＋ 打光</button><button data-add="live">＋ 实况</button>
+            <span class="grow"></span><span id="bdSaved" class="muted"></span><button data-act="fit" class="ghost">回到全部</button>
+          </div>
+          <div id="bdCanvas" tabindex="0"><div id="bdWorld"><svg id="bdWires"></svg></div></div>
+          <p class="hint">拖动空白处平移，滚轮缩放；从节点右侧的圆点拖到另一个节点左侧的圆点就是连线，点连线删除。复刻节点：接「场景图」和「模特」是复刻换人；只接「提示词」和「参考图」是普通生成。</p>
+        </div>
+      </div>
+    </section>
+
     <section id="tab-replica" class="tab" hidden>
       <div id="stage">
         <div id="dropzone" class="drop" tabindex="0">
@@ -174,5 +194,6 @@
 <div id="modal" class="modal" hidden><div class="modal-body" id="modalBody"></div></div>
 <div id="toast"></div>
 <script src="/app.js" type="module"></script>
+<script src="/board.js" type="module"></script>
 </body>
 </html>

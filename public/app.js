@@ -69,6 +69,7 @@ function setTab(tab) {
   if (tab === 'gallery') renderGallery();
   if (tab === 'styles') renderStyles();
   if (tab === 'replica') fillReplicaFaces();
+  if (tab === 'board') window.board?.open();
 }
 $('#tabs').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setTab(b.dataset.tab); });
 
@@ -1096,3 +1097,6 @@ function viewer(src, refSrc) {
   }
 }
 window.__viewer = viewer; // handy for manual checks in the console
+
+// Bridge for the ⑦ 工作台 module (public/board.js), which is a separate file to keep app.js manageable.
+window.studio = { state, api, toast, esc, fileUrl, readFile, setTab, poll, openModal, closeModal, renderGallery, renderJobs };
