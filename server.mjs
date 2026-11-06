@@ -8,14 +8,21 @@ import { listClients, getClient, createClient, updateClient, requireConsent, add
 import { fetchCase } from './lib/douyin.mjs';
 import { MODELS, SIZES, generateImage, explainError, queueState, connStats } from './lib/relay.mjs';
 import { asyncAvailable, originOf } from './lib/async-relay.mjs';
-import { LIGHTS, STRENGTH, relightPrompt } from './lib/relight.mjs';
+import { LIGHTS, STRENGTH, relightPrompt, withSmartLight } from './lib/relight.mjs';
+import { makeLive, makeLiveGif, LIVE_PRESETS, GIF_PROMPTS, LIVE_MODEL } from './lib/live.mjs';
+import { REALISM, withRealism } from './lib/realism.mjs';
+import { detectPhotoBand, cropBand, DEFAULT_BAND } from './lib/screenshot.mjs';
+import { buildReplicaPrompt } from './lib/replica.mjs';
+import { jobSheet, normalizeQa, QA_CHECKS } from './lib/qa.mjs';
+import { visionQa, visionConfig } from './lib/vision.mjs';
+import { POSES, poseClause } from './lib/poses.mjs';
 import { buildPrompt, composePrompt, swapPrompt, extractAuthorPrompt, SHOTS, FLASH, FRAMING, PRESETS, DEFAULT_FACE } from './lib/prompt.mjs';
 import { listStyles, getStyle, saveStyle, deleteStyle, styleDir } from './lib/styles.mjs';
 import { postProcess, cropImage, grid, removeGrokWatermark, addAiLabel, POST_PRESETS, DEFAULT_POST } from './lib/post.mjs';
 import { imageExt } from './lib/net.mjs';
 
 const PUBLIC = path.join(ROOT, 'public');
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.mp4': 'video/mp4', '.json': 'application/json' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.mp4': 'video/mp4', '.json': 'application/json', '.gif': 'image/gif' };
 
 class HttpError extends Error { constructor(status, msg) { super(msg); this.status = status; } }
 const need = (cond, msg, status = 400) => { if (!cond) throw new HttpError(status, msg); };
@@ -84,11 +91,43 @@ async function runJob(p, job) {
   saveProject(p);
 }
 
+// 实况图 job: each output is {file: mp4, poster, webp, gif, live: true}; the poster is what the gallery shows until the clip plays.
+async function runLiveJob(p, job) {
+  job.status = 'running';
+  saveProject(p);
+  const dir = projectDir(p.id);
+  const src = resolveIn(p, job.source);
+  const results = await Promise.allSettled(Array.from({ length: job.count }, async (_, i) => {
+    const outBase = path.join(dir, 'outputs', `${job.id}_${i + 1}`);
+    const out = job.mode === 'gif'
+      ? await makeLiveGif({ imageFile: src, prompt: job.prompt, frames: job.frames, frameMs: job.frameMs, outBase, model: job.model })
+      : await makeLive({ imageFile: src, prompt: job.prompt, seconds: job.seconds, outBase, model: job.model });
+    job.outputs.push({ file: relTo(p, out.mp4), poster: relTo(p, out.poster), webp: relTo(p, out.webp), gif: relTo(p, out.gif), live: true, star: 0 });
+    saveProject(p);
+  }));
+  job.errors.push(...results.filter(r => r.status === 'rejected').map(r => explainError(r.reason)));
+  job.status = job.outputs.length === job.count ? 'done' : job.outputs.length ? 'partial' : 'failed';
+  job.finishedAt = new Date().toISOString();
+  saveProject(p);
+}
+
+// Smart light: after a generation finishes, relight each output once (default: match the scene's own light).
+// The relight results are separate jobs (autoOf), the untouched generation stays in the gallery.
+function chainAutoLight(p, job) {
+  if (!job.autoLight || !LIGHTS[job.autoLight] || !job.outputs.length) return;
+  const prompt = relightPrompt(job.autoLight, { strength: 'normal' });
+  for (const o of job.outputs) {
+    startJob(p, { type: 'relight', light: job.autoLight, autoOf: job.id, model: job.model, size: job.size, count: 1, post: job.post, source: o.file, refs: [o.file], prompt, finalPrompt: prompt });
+  }
+}
+
 function startJob(p, fields) {
   const job = { id: newId('j'), status: 'queued', createdAt: new Date().toISOString(), outputs: [], errors: [], ...fields };
   p.jobs.push(job);
   saveProject(p);
-  runJob(p, job).catch(e => { job.status = 'failed'; job.errors.push(explainError(e)); saveProject(p); });
+  (job.type === 'live' ? runLiveJob(p, job) : runJob(p, job))
+    .then(() => chainAutoLight(p, job))
+    .catch(e => { job.status = 'failed'; job.errors.push(explainError(e)); saveProject(p); });
   return job;
 }
 
@@ -103,6 +142,10 @@ route('GET', '/api/meta', () => ({
   flashes: Object.fromEntries(Object.entries(FLASH).map(([k, v]) => [k, v.label])),
   framings: Object.fromEntries(Object.entries(FRAMING).map(([k, v]) => [k, v.label])),
   presets: PRESETS,
+  qaChecks: QA_CHECKS,
+  poses: Object.fromEntries(Object.entries(POSES).map(([k, v]) => [k, { label: v.label, framing: v.framing }])),
+  realisms: Object.fromEntries(Object.entries(REALISM).map(([k, v]) => [k, v.label])),
+  livePresets: Object.fromEntries(Object.entries(LIVE_PRESETS).map(([k, v]) => [k, { label: v.label, prompt: v.prompt, gifPrompt: GIF_PROMPTS[k] }])),
   lights: Object.fromEntries(Object.entries(LIGHTS).map(([k, v]) => [k, v.label])), strengths: STRENGTH,
   postPresets: Object.fromEntries(Object.entries(POST_PRESETS).map(([k, v]) => [k, v.label])), defaultPost: DEFAULT_POST,
 }));
@@ -178,6 +221,7 @@ route('POST', '/api/prompt', async req => ({ prompt: buildPrompt(await readJson(
 
 function startGenJob(p, b) {
   need(b.prompt?.trim(), '提示词为空');
+  need(!b.model || MODELS.some(m => m.id === b.model), '服务不认识这个模型：' + b.model + '（新加的模型要重启服务）');
   const model = MODELS.find(m => m.id === b.model) || MODELS[0];
   const count = Math.min(Math.max(Number(b.count) || 1, 1), 4);
   const face = b.faceId ? findFace(p, b.faceId) : null;
@@ -187,11 +231,14 @@ function startGenJob(p, b) {
   const faceFiles = face ? [face.file, ...(face.extra || [])] : [];
   const bodyFiles = face && b.includeBody !== false ? (p.bodyRefs || []).slice(0, 2) : [];
   const refs = model.refs ? [...faceFiles, ...bodyFiles, ...moodboard] : [];
-  const finalPrompt = model.refs ? composePrompt(b.prompt, { hasFace: !!face, faceCount: faceFiles.length, bodyCount: bodyFiles.length, moodboard: moodboard.length }) : b.prompt;
+  const styled = withRealism(`${b.prompt} ${poseClause(b.pose)}`.trim(), b.realism);
+  const lit = b.smartLight === false ? styled : withSmartLight(styled);
+  const finalPrompt = model.refs ? composePrompt(lit, { hasFace: !!face, faceCount: faceFiles.length, bodyCount: bodyFiles.length, moodboard: moodboard.length }) : lit;
+  const autoLight = b.autoLight === true ? 'scene_match' : (LIGHTS[b.autoLight] ? b.autoLight : null);
   return startJob(p, {
     type: 'gen', model: model.id, aspect: b.aspect || '3:4', size: SIZES[b.aspect] || SIZES['3:4'], count,
     post: postKey(b.post), faceId: face?.id || null, refs, prompt: b.prompt, finalPrompt, fields: b.fields || null,
-    styleId: b.styleId || null,
+    styleId: b.styleId || null, autoLight: model.refs ? autoLight : null, pose: POSES[b.pose] ? b.pose : null, replica: b.replica || null, realism: REALISM[b.realism] ? b.realism : 'off',
   });
 }
 
@@ -220,11 +267,110 @@ route('POST', '/api/projects/:id/jobs/:jobId/rerun', async (req, { p, jobId }) =
   return startJob(p, { ...fields, count, rerunOf: j.id });
 });
 
+route('POST', '/api/projects/:id/live', async (req, { p }) => {
+  const b = await readJson(req);
+  resolveIn(p, b.source);
+  const preset = LIVE_PRESETS[b.preset] || LIVE_PRESETS.breeze;
+  const mode = b.mode === 'video' ? 'video' : 'gif';
+  const prompt = (b.prompt && b.prompt.trim()) || (mode === 'gif' ? GIF_PROMPTS[b.preset] || GIF_PROMPTS.breeze : preset.prompt);
+  const seconds = Math.min(Math.max(Number(b.seconds) || 3, 2), 5);
+  return startJob(p, {
+    type: 'live', mode, model: mode === 'gif' ? 'gpt-image-2.6-flare' : LIVE_MODEL, frames: Math.min(Math.max(Number(b.frames) || 6, 2), 16), frameMs: Math.min(Math.max(Number(b.frameMs) || 120, 60), 400), count: Math.min(Math.max(Number(b.count) || 2, 1), 4), seconds,
+    post: null, source: b.source, refs: [b.source], prompt, finalPrompt: prompt,
+  });
+});
+
+// ---- 复刻换人: upload a reference (usually a phone screenshot), crop the UI away, swap in the model ----------------------
+function addUploadRef(p, abs) {
+  let up = p.cases.find(c => c.awemeId === 'upload');
+  if (!up) { up = { awemeId: 'upload', type: 'upload', desc: '我上传的参考图', author: '', images: [] }; p.cases.push(up); }
+  up.images.push(relTo(p, abs));
+  saveProject(p);
+}
+
+route('POST', '/api/projects/:id/replica-ref', async (req, { p }) => {
+  const { dataUrl, crop = true } = await readJson(req);
+  const orig = saveDataUrl(p, dataUrl, 'refs/shots');
+  const band = crop ? await detectPhotoBand(orig) : { top: 0, bottom: 1, auto: false };
+  const cropped = path.join(projectDir(p.id), 'refs', 'upload', `${newId()}.jpg`);
+  fs.mkdirSync(path.dirname(cropped), { recursive: true });
+  await cropBand(orig, cropped, band);
+  addUploadRef(p, cropped);
+  return { original: relTo(p, orig), file: relTo(p, cropped), top: band.top, bottom: band.bottom, auto: band.auto };
+});
+
+route('POST', '/api/projects/:id/replica-recrop', async (req, { p }) => {
+  const b = await readJson(req);
+  const orig = resolveIn(p, b.original);
+  const top = Math.min(Math.max(Number(b.top), 0), 0.9), bottom = Math.min(Math.max(Number(b.bottom), top + 0.1), 1);
+  const cropped = path.join(projectDir(p.id), 'refs', 'upload', `${newId()}.jpg`);
+  await cropBand(orig, cropped, { top, bottom });
+  addUploadRef(p, cropped);
+  return { original: b.original, file: relTo(p, cropped), top, bottom, auto: false };
+});
+
+route('POST', '/api/projects/:id/replica', async (req, { p }) => {
+  const b = await readJson(req);
+  resolveIn(p, b.source);
+  need(b.faceId && findFace(p, b.faceId), '先选一个模特');
+  need(b.outfitMode !== 'change' || (b.outfit || '').trim(), '选了「换成指定衣服」要写衣服');
+  const prompt = buildReplicaPrompt({ outfitMode: b.outfitMode, outfit: b.outfit, identity: b.identity, hair: b.hair, removeUi: b.removeUi !== false, keepExpression: !!b.keepExpression });
+  return startGenJob(p, { ...b, prompt, moodboard: [b.source], aspect: '3:4', count: b.count || 2, includeBody: b.includeBody !== false && !!(p.bodyRefs || []).length, fields: null, replica: { source: b.source, outfitMode: b.outfitMode || 'keep' } });
+});
+
+// ---- QA for an agent that can see images ------------------------------------------------------------------------
+// The agent opens the sheet with its own image-reading tool, judges the checks in QA_CHECKS and posts the verdict back.
+route('POST', '/api/projects/:id/jobs/:jobId/qa-sheet', async (req, { p, jobId }) => {
+  const job = p.jobs.find(x => x.id === jobId);
+  need(job, '任务不存在', 404);
+  const { file, layout } = await jobSheet(p, job, { resolveIn, projectDir });
+  return { file: relTo(p, file), abs: file, layout, outputs: job.outputs.filter(o => !o.live).map(o => o.file), checks: QA_CHECKS };
+});
+
+// Automatic first pass by a vision model (relay chat model by default). Writes the same QA record the agent would.
+route('POST', '/api/projects/:id/jobs/:jobId/auto-qa', async (req, { p, jobId }) => {
+  const job = p.jobs.find(x => x.id === jobId);
+  need(job, '任务不存在', 404);
+  const sheet = await jobSheet(p, job, { resolveIn, projectDir });
+  const stills = job.outputs.filter(o => !o.live);
+  const out = await visionQa(sheet.file, { referenceFirst: /^reference scene/.test(sheet.layout.row2), results: stills.length });
+  const applied = [];
+  for (const r of out.results) {
+    const o = stills[(Number(r.index) || 0) - 1];
+    if (!o) continue;
+    o.qa = normalizeQa({ checks: r.checks, note: r.note, by: out.model });
+    applied.push({ file: o.file, verdict: o.qa.verdict });
+  }
+  need(applied.length, '看图模型没有给出可用的结果，可以重试');
+  saveProject(p);
+  return { model: out.model, applied };
+});
+
+route('GET', '/api/vision', () => { const c = visionConfig(); return { model: c.model, base: c.base ? new URL(c.base).host : '', hasKey: !!c.key }; });
+
+route('POST', '/api/projects/:id/qa', async (req, { p }) => {
+  const b = await readJson(req);
+  const o = allOutputs(p).find(x => x.file === b.file);
+  need(o, '找不到这张图', 404);
+  o.qa = normalizeQa(b);
+  saveProject(p);
+  return o.qa;
+});
+
+// One click, one pose each: the same prompt/model/face with a different pose per job (same person and outfit across the set).
+route('POST', '/api/projects/:id/pose-set', async (req, { p }) => {
+  const b = await readJson(req);
+  need(Array.isArray(b.poseIds) && b.poseIds.length, '先勾选姿势');
+  need(b.poseIds.every(id => POSES[id]), '有不认识的姿势');
+  return b.poseIds.slice(0, 12).map(pose => startGenJob(p, { ...b, pose, count: b.count || 1 }));
+});
+
 route('POST', '/api/projects/:id/swap', async (req, { p }) => {
   const b = await readJson(req);
   const face = findFace(p, b.faceId);
   need(face, '先选一个模特');
   resolveIn(p, b.source);
+  need(!b.model || MODELS.some(m => m.id === b.model), '服务不认识这个模型：' + b.model + '（新加的模型要重启服务）');
   const model = MODELS.find(m => m.id === b.model && m.refs) || MODELS[0];
   const prompt = swapPrompt(face.desc);
   return startJob(p, {
@@ -238,6 +384,7 @@ route('POST', '/api/projects/:id/relight', async (req, { p }) => {
   const b = await readJson(req);
   resolveIn(p, b.source);
   need(LIGHTS[b.light], '没有这种灯型');
+  need(!b.model || MODELS.some(m => m.id === b.model), '服务不认识这个模型：' + b.model + '（新加的模型要重启服务）');
   const model = MODELS.find(m => m.id === b.model && m.refs) || MODELS[0];
   const prompt = relightPrompt(b.light, { strength: b.strength, extra: b.extra || '' });
   return startJob(p, {
@@ -279,7 +426,14 @@ route('POST', '/api/projects/:id/export', async (req, { p }) => {
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '_').slice(0, 15);
   const outDir = path.join(projectDir(p.id), 'exports', stamp);
   fs.mkdirSync(outDir, { recursive: true });
-  const copied = files.map((r, i) => {
+  const live = allOutputs(p).filter(o => o.live && files.includes(o.file));
+  const stills = files.filter(r => !live.some(o => o.file === r));
+  need(stills.length || live.length, '先勾选要导出的图');
+  for (const o of live) for (const key of ['file', 'webp', 'gif']) {
+    const src = resolveIn(p, o[key]);
+    fs.copyFileSync(src, path.join(outDir, `实况_${path.basename(src)}`));
+  }
+  const copied = stills.map((r, i) => {
     const src = resolveIn(p, r);
     const dst = path.join(outDir, `${String(i + 1).padStart(2, '0')}${path.extname(src)}`);
     fs.copyFileSync(src, dst);
@@ -287,8 +441,8 @@ route('POST', '/api/projects/:id/export', async (req, { p }) => {
   });
   const c = Number(cols) || (copied.length <= 4 ? copied.length : 3);
   const gridFile = path.join(outDir, `拼图_${copied.length}张.jpg`);
-  await grid(copied, gridFile, { cols: c });
-  if (aiLabel) {
+  if (copied.length) await grid(copied, gridFile, { cols: c });
+  if (aiLabel && copied.length) {
     const tmp = gridFile.replace(/\.jpg$/, '_tmp.jpg');
     await addAiLabel(gridFile, tmp);
     fs.renameSync(tmp, gridFile);
@@ -314,6 +468,30 @@ route('POST', '/api/projects/:id/open', async (req, { p }) => {
 
 route('GET', '/api/clients', () => ({ types: TYPES, clients: listClients() }));
 route('POST', '/api/clients', async req => createClient(await readJson(req)));
+
+// Client dossier: the client card, headline numbers and one entry per order (project) with a few result thumbnails.
+route('GET', '/api/clients/:cid/dossier', (req, { cid }) => {
+  const c = getClient(cid);
+  need(c, '客户不存在', 404);
+  const full = listClients().find(x => x.id === cid) || c;
+  const ids = [...new Set([...(c.orders || []), ...listProjects().filter(p => p.clientId === cid).map(p => p.id)])];
+  const orders = ids.map(id => getProject(id)).filter(Boolean).map(p => {
+    const outs = p.jobs.flatMap(j => j.outputs.map(o => ({ ...o, job: j }))).filter(o => !o.live);
+    const live = p.jobs.flatMap(j => j.outputs).filter(o => o.live).length;
+    const pick = [...outs].sort((a, b) => (b.star || 0) - (a.star || 0) || (b.job.createdAt || '').localeCompare(a.job.createdAt || '')).slice(0, 4);
+    return {
+      projectId: p.id, name: p.name, createdAt: p.createdAt, jobs: p.jobs.length, images: outs.length, live,
+      starred: outs.filter(o => o.star >= 4).length, qaPass: outs.filter(o => o.qa?.verdict === 'pass').length, qaChecked: outs.filter(o => o.qa).length,
+      thumbs: pick.map(o => o.final || o.file),
+    };
+  }).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const sum = k => orders.reduce((n, o) => n + o[k], 0);
+  return {
+    client: full,
+    stats: { orders: orders.length, images: sum('images'), starred: sum('starred'), qaPass: sum('qaPass'), live: sum('live'), photos: c.faces.length + c.bodies.length, daysLeft: full.daysLeft, expired: !!full.expired },
+    orders,
+  };
+});
 route('GET', '/api/clients/:cid', (req, { cid }) => { const c = getClient(cid); need(c, '客户不存在', 404); return c; });
 route('PATCH', '/api/clients/:cid', async (req, { cid }) => updateClient(cid, await readJson(req)));
 
@@ -399,7 +577,7 @@ route('GET', '/api/styles', () => listStyles());
 route('POST', '/api/projects/:id/styles', async (req, { p }) => {
   const b = await readJson(req);
   const refs = p.moodboard.map(r => resolveIn(p, r));
-  const best = allOutputs(p).filter(o => o.star >= 4).sort((x, y) => y.star - x.star).slice(0, 6)
+  const best = allOutputs(p).filter(o => o.star >= 4 && !o.live).sort((x, y) => y.star - x.star).slice(0, 6)
     .map(o => resolveIn(p, o.final || o.file));
   need(refs.length || best.length, '先勾 moodboard 或给满意的图打 4 星以上');
   return saveStyle({ id: b.updateId || null, name: b.name, notes: b.notes, fields: b.fields, post: b.post, model: b.model, refs, best, sourceProject: p.id });

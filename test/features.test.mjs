@@ -49,3 +49,33 @@ test('style card save, update and delete round-trip', () => {
   }
   assert.equal(getStyle(st.id), null);
 });
+
+test('live presets and the ffmpeg conversion helper exist', async () => {
+  const { LIVE_PRESETS, LIVE_MODEL, convertLive } = await import('../lib/live.mjs');
+  assert.equal(LIVE_MODEL, 'grok-imagine-video');
+  for (const [k, v] of Object.entries(LIVE_PRESETS)) { assert.ok(v.label && /Static camera/.test(v.prompt), k); }
+  assert.equal(typeof convertLive, 'function');
+});
+
+test('qa verdict normalisation keeps only known checks and derives a verdict', async () => {
+  const { normalizeQa, QA_CHECKS } = await import('../lib/qa.mjs');
+  const q = normalizeQa({ checks: { likeness: { ok: true, note: 'mole ok' }, overlay: { ok: true }, bogus: { ok: false } }, by: 'claude-code' });
+  assert.deepEqual(Object.keys(q.checks), ['likeness', 'overlay']);
+  assert.equal(q.verdict, 'pass');
+  assert.equal(normalizeQa({ checks: { anatomy: { ok: false, note: 'six fingers' } } }).verdict, 'retry');
+  assert.equal(normalizeQa({ verdict: 'fail', checks: {} }).verdict, 'fail');
+  assert.equal(normalizeQa({}).verdict, 'retry', 'no checks at all is not a pass');
+  assert.ok(Object.keys(QA_CHECKS).length === 6);
+});
+
+test('qa: unknown checks never pass; vision json parsing', async () => {
+  const { normalizeQa } = await import('../lib/qa.mjs');
+  const { parseVisionJson } = await import('../lib/vision.mjs');
+  const q = normalizeQa({ checks: { likeness: { ok: true }, anatomy: { ok: null, note: '看不清' } }, verdict: 'pass' });
+  assert.equal(q.verdict, 'unsure', 'a claimed pass is downgraded while a check is unknown');
+  assert.equal(q.checks.anatomy.ok, null);
+  assert.equal(normalizeQa({ checks: { likeness: { ok: false } }, verdict: 'pass' }).verdict, 'retry');
+  const j = parseVisionJson('```json\n{"results":[{"index":1,"checks":{}}]}\n```');
+  assert.equal(j.results[0].index, 1);
+  assert.throws(() => parseVisionJson('no json here'), /JSON/);
+});

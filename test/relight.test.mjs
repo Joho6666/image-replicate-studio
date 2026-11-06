@@ -20,3 +20,11 @@ test('strength and extra text are appended; unknown light throws', () => {
   assert.deepEqual(Object.keys(STRENGTH), ['subtle', 'normal', 'strong']);
   assert.throws(() => relightPrompt('nope'), /没有这种灯型/);
 });
+
+test('scene_match light and the smart-light prompt clause', async () => {
+  const { SMART_LIGHT_CLAUSE, withSmartLight } = await import('../lib/relight.mjs');
+  assert.match(relightPrompt('scene_match'), /dominant light source already visible/);
+  const once = withSmartLight('A woman in a cafe.');
+  assert.ok(once.endsWith(SMART_LIGHT_CLAUSE));
+  assert.equal(withSmartLight(once), once, 'clause is not added twice');
+});

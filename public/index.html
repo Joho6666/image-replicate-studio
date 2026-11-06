@@ -35,6 +35,7 @@
         <button data-tab="gen">③ 出图</button>
         <button data-tab="gallery">④ 画廊</button>
         <button data-tab="styles">⑤ 风格卡</button>
+        <button data-tab="replica">⑥ 复刻台</button>
       </nav>
       <button id="openDir" class="ghost">打开项目文件夹</button>
     </header>
@@ -89,6 +90,13 @@
             <label>张数 <select id="count"><option>1</option><option selected>2</option><option>3</option><option>4</option></select></label>
             <label>模特 <select id="genFace"><option value="">不固定（随机新面孔）</option></select></label>
             <label>后期 <select id="post"></select></label>
+            <label>写实包 <select id="realism"></select></label>
+            <label>姿势 <select id="pose"></select></label>
+            <button type="button" id="poseSetBtn" class="ghost" title="勾选多个姿势，同一个人同一套衣服一次出一组">按姿势出一组…</button>
+            <label title="提示词里加一段光源方向和阴影的描述，不多花一次出图">
+              <input type="checkbox" id="smartLight" checked> 智能打光（提示词）</label>
+            <label title="出图后再对每张图做一次「匹配场景光」补光，会多花一倍时间和次数，原图保留">
+              <input type="checkbox" id="autoLight"> 出图后自动补光</label>
           </div>
           <div id="genRefs" class="moodbar"></div>
           <button id="genBtn" class="primary">开始出图</button>
@@ -103,6 +111,43 @@
       </div>
     </section>
 
+    <section id="tab-replica" class="tab" hidden>
+      <div id="stage">
+        <div id="dropzone" class="drop" tabindex="0">
+          <div class="drop-hint"><b>粘贴或拖入参考图</b><span>Ctrl + V 粘贴截屏，或把图片拖到这里，或点一下选择文件</span></div>
+          <input id="rpUpload" type="file" accept="image/*" hidden>
+          <img id="rpPreview" alt="" hidden>
+          <div id="rpCrop" class="crop-bar" hidden>
+            <span id="rpNote" class="muted"></span>
+            <label>上边 <input id="rpTop" type="number" step="0.5" min="0" max="80"> %</label>
+            <label>下边 <input id="rpBottom" type="number" step="0.5" min="20" max="100"> %</label>
+            <button id="rpRecrop" type="button" class="ghost small">重新裁剪</button>
+          </div>
+        </div>
+        <div class="stage-side">
+          <div class="muted">给谁做</div>
+          <div id="rpChips" class="chips"></div>
+          <div class="seg" role="group" aria-label="衣服">
+            <button type="button" class="on" data-outfit="keep">保留原衣服</button>
+            <button type="button" data-outfit="change">换成指定衣服</button>
+          </div>
+          <input id="rpOutfit" placeholder="英文描述衣服，例如 a cream knit cardigan over a white tee and wide-leg jeans" hidden>
+          <details class="more"><summary>更多设置</summary>
+            <label>身份补充（痣、脸型）<input id="rpIdentity"></label>
+            <label>头发（默认跟参考照片一致）<input id="rpHair" placeholder="例如 natural black medium-length hair with a light fringe"></label>
+            <div class="row wrap">
+              <label>张数 <select id="rpCount"><option>1</option><option selected>2</option><option>3</option><option>4</option></select></label>
+              <label class="check"><input type="checkbox" id="rpRemoveUi" checked> 去掉截屏按钮和文字</label>
+              <label class="check"><input type="checkbox" id="rpKeepExpr"> 保留原表情</label>
+            </div>
+            <p class="hint">模型、后期、打光沿用「③ 出图」里的选择。参考图是别人的作品时只用于内部测试。</p>
+          </details>
+          <button id="rpGo" class="primary" type="button">开始复刻</button>
+        </div>
+        <div id="rpResults" class="stage-results"></div>
+      </div>
+    </section>
+
     <section id="tab-styles" class="tab" hidden>
       <p class="hint">风格卡 = 一套验证过的 moodboard + 表单 + 后期 + 高星成品，所有项目通用。套用后会把它的图放进「① 案例」并设为 moodboard，表单也会填好。</p>
       <div id="styles" class="cards"></div>
@@ -112,6 +157,7 @@
       <div class="row wrap">
         <label class="check"><input id="showRaw" type="checkbox"> 看原图（不加后期）</label>
         <label class="check"><input id="onlyStar" type="checkbox"> 只看打星的</label>
+        <label class="check" title="默认是一面连续的图片墙；勾选后按任务分组，才有「再来一批」「自动质检」等任务按钮"><input id="groupJobs" type="checkbox"> 按任务分组</label>
         <span class="grow"></span>
         <span id="selCount" class="muted"></span>
         <button id="exportBtn">导出选中（原图+拼图）</button>

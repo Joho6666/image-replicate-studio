@@ -43,3 +43,26 @@ test('swap prompt keeps scene and mentions face description', () => {
   assert.match(s, /\(mole on left cheek\)/);
   assert.match(s, /open them/);
 });
+
+test('realism packs and pose clauses', async () => {
+  const { REALISM, withRealism } = await import('../lib/realism.mjs');
+  const { POSES, poseClause } = await import('../lib/poses.mjs');
+  assert.equal(withRealism('A.', 'off'), 'A.');
+  assert.match(withRealism('A.', 'v2'), /slightly asymmetrical face/);
+  assert.ok(!/pores|freckle|redness/i.test(REALISM.v2.text), 'v2 must not ask for pores/freckles/redness');
+  assert.ok(Object.keys(POSES).length >= 20);
+  assert.match(poseClause('stand_look_back'), /^Pose \(this overrides/);
+  assert.equal(poseClause('nope'), '');
+});
+
+test('replica prompt: keep/change outfit, ui removal, identity', async () => {
+  const { buildReplicaPrompt } = await import('../lib/replica.mjs');
+  const keep = buildReplicaPrompt({ identity: 'one small mole below the eye', hair: 'black medium hair' });
+  assert.match(keep, /Keep her outfit exactly as in the last image/);
+  assert.match(keep, /Remove every phone-screenshot overlay/);
+  assert.match(keep, /one small mole below the eye/);
+  const change = buildReplicaPrompt({ outfitMode: 'change', outfit: 'a cream cardigan.', removeUi: false });
+  assert.match(change, /Change her clothes: she wears a cream cardigan\. Everything else/);
+  assert.ok(!/phone-screenshot/.test(change));
+  assert.match(buildReplicaPrompt({ outfitMode: 'change', outfit: '' }), /Keep her outfit exactly/, 'empty outfit falls back to keep');
+});

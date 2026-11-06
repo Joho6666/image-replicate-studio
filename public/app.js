@@ -68,6 +68,7 @@ function setTab(tab) {
   $$('.tab').forEach(s => (s.hidden = s.id !== 'tab-' + tab));
   if (tab === 'gallery') renderGallery();
   if (tab === 'styles') renderStyles();
+  if (tab === 'replica') fillReplicaFaces();
 }
 $('#tabs').addEventListener('click', e => { const b = e.target.closest('button'); if (b) setTab(b.dataset.tab); });
 
@@ -219,6 +220,8 @@ function fillSelects() {
   $('[name=framing]').innerHTML = opts(m.framings);
   $('[name=aspect]').innerHTML = m.sizes.map(s => `<option>${s}</option>`).join('');
   $('[name=shot]').value = 'friend';
+  $('#realism').innerHTML = Object.entries(m.realisms).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('');
+  $('#pose').innerHTML = '<option value="">不指定</option>' + Object.entries(m.poses).map(([k, v]) => `<option value="${k}">${esc(v.label)}</option>`).join('');
   $('#post').innerHTML = Object.entries(m.postPresets).map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join('') + '<option value="none">不加后期</option>';
   $('#post').value = m.defaultPost;
   $('#model').innerHTML = m.models.map(x => `<option value="${x.id}">${esc(x.label)}</option>`).join('');
@@ -282,6 +285,7 @@ $('#genBtn').addEventListener('click', async () => {
   await api('POST', `/api/projects/${state.p.id}/generate`, {
     prompt: $('#promptBox').value, fields: formFields(), aspect: $('[name=aspect]').value,
     model: model.id, count: $('#count').value, faceId: $('#genFace').value || null, post: $('#post').value,
+    smartLight: $('#smartLight').checked, autoLight: $('#autoLight').checked, realism: $('#realism').value, pose: $('#pose').value || null,
   });
   state.p = await api('GET', `/api/projects/${state.p.id}`);
   toast('已提交，出图约 40–60 秒');
@@ -296,10 +300,11 @@ function jobHtml(j, { withOutputs = true } = {}) {
   const statusText = { queued: '排队', running: '生成中', done: '完成', partial: '部分失败', failed: '失败' }[j.status];
   return `<div class="job" data-id="${j.id}">
     <div class="job-head"><span class="status ${j.status}">${statusText}</span>
-      <b>${j.type === 'swap' ? '换脸' : j.type === 'relight' ? '打光：' + esc(state.meta.lights[j.light] || '') : '出图'}</b> ${esc(j.model)} · ${j.outputs.length}/${j.count} 张 · ${j.createdAt.slice(5, 16).replace('T', ' ')}
+      <b>${j.type === 'swap' ? '换脸' : j.type === 'live' ? '实况图（' + j.seconds + ' 秒）' : j.type === 'relight' ? '打光：' + esc(state.meta.lights[j.light] || '') : '出图'}</b> ${esc(j.model)} · ${j.outputs.length}/${j.count} 张 · ${j.createdAt.slice(5, 16).replace('T', ' ')}
       ${face ? `· 模特 ${esc(face.name)}` : ''} ${j.refs.length ? `· 参考图 ${j.refs.length} 张` : ''}
       ${j.source ? `<img src="${fileUrl(j.source)}" style="height:36px;border-radius:4px" title="底图">` : ''}
       ${['done', 'partial', 'failed'].includes(j.status) ? '<button class="rerun" data-act="rerun">再来一批</button>' : ''}
+      ${['done', 'partial'].includes(j.status) && j.type !== 'live' && j.outputs.length ? '<button class="rerun" data-act="autoqa" title="用看图模型初筛：像不像本人、截屏残留、手指、衣服、背景、越界">自动质检</button>' : ''}
       ${['partial', 'failed'].includes(j.status) ? `<button class="rerun" data-act="retry" data-count="${j.count - j.outputs.length}">重试失败的 ${j.count - j.outputs.length} 张</button>` : ''}</div>
     ${(j.errors || []).map(e => `<div class="err">⚠ ${esc(e)}</div>`).join('')}
     <details><summary>提示词</summary><pre>${esc(j.finalPrompt)}</pre>${j.type === 'gen' ? '<button data-act="reuse">载入到出图表单</button>' : ''}</details>
@@ -308,17 +313,68 @@ function jobHtml(j, { withOutputs = true } = {}) {
 }
 
 function outputCard(o) {
+  if (o.live) return liveCard(o);
   const src = fileUrl(!$('#showRaw').checked && o.final ? o.final : o.file);
   return `<div class="card ${state.selected.has(o.file) ? 'selected' : ''}" data-file="${esc(o.file)}">
-    <img src="${src}" loading="lazy" data-act="zoom">
+    ${qaBadge(o)}<img src="${src}" loading="lazy" data-act="zoom">
     <div class="body">
       <div class="row" style="margin:0"><span class="stars">${[1, 2, 3, 4, 5].map(n => `<span data-star="${n}" class="${n <= o.star ? 'on' : ''}">★</span>`).join('')}</span>
       <span class="grow"></span><label class="check"><input type="checkbox" data-act="sel" ${state.selected.has(o.file) ? 'checked' : ''}>选</label></div>
       <div class="actions">
-        <button data-act="compare">对比原图</button><button data-act="swap">换脸</button><button data-act="relight">重新打光</button><button data-act="face">设为模特</button><button data-act="open">文件夹</button>
+        <button data-act="compare">对比原图</button><button data-act="swap">换脸</button><button data-act="relight">重新打光</button><button data-act="live">做实况图</button><button data-act="face">设为模特</button><button data-act="open">文件夹</button>
         <select data-act="repost" title="换后期（不重新出图）">${repostOptions(o)}</select>
       </div>
     </div></div>`;
+}
+
+function qaBadge(o) {
+  if (!o.qa) return '';
+  const label = { pass: '质检通过', retry: '质检：建议重出', fail: '质检不通过', unsure: '质检：有项目看不清' }[o.qa.verdict] || o.qa.verdict;
+  const lines = Object.entries(o.qa.checks || {}).map(([k, c]) => (c.ok === null ? '？ ' : c.ok ? '✓ ' : '✗ ') + (state.meta.qaChecks?.[k] || k) + (c.note ? '：' + c.note : ''));
+  if (o.qa.note) lines.push(o.qa.note);
+  const tip = lines.join('\n');
+  return `<div class="qa-chip ${esc(o.qa.verdict)}" title="${esc(tip)}">${label}</div>`;
+}
+
+// 实况图 card: plays the mp4 on loop; webp/gif are the share formats.
+function liveCard(o) {
+  return `<div class="card ${state.selected.has(o.file) ? 'selected' : ''}" data-file="${esc(o.file)}">
+    ${qaBadge(o)}<video src="${fileUrl(o.file)}" poster="${fileUrl(o.poster)}" autoplay loop muted playsinline controls preload="metadata" style="width:100%;display:block"></video>
+    <div class="body">
+      <div class="row" style="margin:0"><span class="stars">${[1, 2, 3, 4, 5].map(n => `<span data-star="${n}" class="${n <= o.star ? 'on' : ''}">★</span>`).join('')}</span>
+      <span class="grow"></span><label class="check"><input type="checkbox" data-act="sel" ${state.selected.has(o.file) ? 'checked' : ''}>选</label></div>
+      <div class="actions">
+        <a href="${fileUrl(o.webp)}" target="_blank">动图 WebP</a> <a href="${fileUrl(o.gif)}" target="_blank">GIF</a> <a href="${fileUrl(o.file)}" download>mp4</a>
+        <button data-act="open">文件夹</button>
+      </div>
+    </div></div>`;
+}
+
+function liveDialog(o) {
+  const presets = state.meta.livePresets || {};
+  const first = Object.keys(presets)[0];
+  const body = openModal(`
+    <h3 style="margin-top:0">做实况图（让这张图动起来）</h3>
+    <div class="row"><img src="${fileUrl(o.final || o.file)}" style="height:200px;border-radius:6px">
+      <div class="grow">
+        <label>动作 <select id="lvPreset">${Object.entries(presets).map(([k, v]) => `<option value="${k}">${esc(v.label)}</option>`).join('')}</select></label>
+        <label>方式 <select id="lvMode"><option value="gif" selected>GPT 动图（从原图出发，推荐）</option><option value="video">视频模型（实验）</option></select></label>
+        <label>时长/帧数 <select id="lvSec"><option>2</option><option selected>3</option><option>4</option></select> 秒（视频）　帧数 <select id="lvFrames"><option>4</option><option selected>6</option><option>8</option><option>12</option></select>（动图）</label>
+        <label>版本数 <select id="lvCount"><option>1</option><option selected>2</option><option>3</option></select></label>
+        <label>动作提示词（英文，可改）<textarea id="lvPrompt" rows="6" style="width:100%">${esc((presets[first] || {}).gifPrompt || '')}</textarea></label>
+      </div></div>
+    <p class="hint">用未加后期的原图做图生视频，约 1–2 分钟。视频模型对脸的保持比静图差，每次多出几个版本挑。真人照片做会动的版本，需要本人同意。出完后有 mp4、WebP 动图、GIF 三种格式。</p>
+    <button id="lvGo" class="primary">开始生成</button>`);
+  const refill = () => { const pr = presets[body.querySelector('#lvPreset').value]; body.querySelector('#lvPrompt').value = body.querySelector('#lvMode').value === 'gif' ? pr.gifPrompt : pr.prompt; };
+  body.querySelector('#lvPreset').addEventListener('change', refill);
+  body.querySelector('#lvMode').addEventListener('change', refill);
+  body.querySelector('#lvGo').addEventListener('click', async () => {
+    await api('POST', `/api/projects/${state.p.id}/live`, { source: o.file, preset: body.querySelector('#lvPreset').value, prompt: body.querySelector('#lvPrompt').value, mode: body.querySelector('#lvMode').value, frames: body.querySelector('#lvFrames').value, seconds: body.querySelector('#lvSec').value, count: body.querySelector('#lvCount').value });
+    closeModal();
+    state.p = await api('GET', `/api/projects/${state.p.id}`);
+    toast('实况图已提交，约 1–2 分钟');
+    renderGallery(); renderJobs(); poll();
+  });
 }
 
 function repostOptions(o) {
@@ -334,16 +390,44 @@ function renderJobs() {
 
 // ---- ④ gallery --------------------------------------------------------------
 
+// column count from the available width: about 220 px per column on desktop, 150 px on narrow screens
+function wallColumns() {
+  const w = ($('#main').clientWidth || innerWidth) - 28;
+  return Math.max(2, Math.floor((w + 16) / ((innerWidth <= 820 ? 150 : 220) + 16)));
+}
+window.addEventListener('resize', () => { const g = $('.wall'); if (g && Number(g.dataset.n) !== wallColumns() && state.tab === 'gallery') renderGallery(); });
+
 function renderGallery() {
   const jobs = [...state.p.jobs].reverse();
-  $('#gallery').innerHTML = jobs.length ? jobs.map(j => jobHtml(j)).join('') : '<p class="hint">还没有出图。</p>';
+  if (!jobs.length) $('#gallery').innerHTML = '<p class="hint">还没有出图。</p>';
+  else if ($('#groupJobs').checked) $('#gallery').innerHTML = jobs.map(j => jobHtml(j)).join('');
+  else {
+    // wall mode: one continuous masonry of every output, newest first; only unfinished/failed jobs keep a caption strip
+    const running = jobs.filter(j => ['queued', 'running'].includes(j.status)).map(j => jobHtml(j, { withOutputs: false })).join('');
+    const bad = jobs.filter(j => ['partial', 'failed'].includes(j.status));
+    const strip = running + (bad.length ? `<details class="failbox"><summary>${bad.length} 个任务有失败（点开看原因、重试）</summary>${bad.map(j => jobHtml(j, { withOutputs: false })).join('')}</details>` : '');
+    const label = j => `${j.type === 'live' ? '实况图' : j.type === 'relight' ? '打光' : j.type === 'swap' ? '换脸' : '出图'} · ${j.model} · ${j.createdAt.slice(5, 16).replace('T', ' ')}`;
+    const cards = jobs.flatMap(j => {
+      const waiting = ['queued', 'running'].includes(j.status) ? j.count - j.outputs.length : 0;
+      return [
+        ...j.outputs.filter(o => !$('#onlyStar').checked || o.star > 0).map(o => outputCard(o).replace('class="card ', `title="${esc(label(j))}" class="card `)),
+        ...Array.from({ length: waiting }, () => '<div class="card"><div class="placeholder">生成中…</div></div>'),
+      ];
+    });
+    // distribute round-robin into N columns so the newest images form the first row (CSS columns would fill top-to-bottom)
+    const n = wallColumns();
+    const cols = Array.from({ length: n }, (_, i) => cards.filter((_, k) => k % n === i).join(''));
+    $('#gallery').innerHTML = strip + `<div class="wall" data-n="${n}">${cols.map(c => `<div class="wcol">${c}</div>`).join('')}</div>`;
+  }
   $('#selCount').textContent = state.selected.size ? `已选 ${state.selected.size} 张` : '';
 }
 $('#showRaw').addEventListener('change', () => { renderGallery(); renderJobs(); });
 $('#onlyStar').addEventListener('change', renderGallery);
+$('#groupJobs').addEventListener('change', renderGallery);
 
 async function onOutputClick(e) {
   const card = e.target.closest('.card[data-file]');
+  if (card && e.target.dataset.act === 'zoom' && matchMedia('(hover: none)').matches) { card.classList.toggle('tap'); return; }
   const jobEl = e.target.closest('.job');
   if (['rerun', 'retry'].includes(e.target.dataset.act) && jobEl) {
     e.target.disabled = true;
@@ -351,6 +435,12 @@ async function onOutputClick(e) {
     state.p = await api('GET', `/api/projects/${state.p.id}`);
     toast('已重新提交');
     renderJobs(); renderGallery(); poll();
+    return;
+  }
+  if (e.target.dataset.act === 'autoqa' && jobEl) {
+    e.target.disabled = true; e.target.textContent = '质检中…';
+    try { const r = await api('POST', `/api/projects/${state.p.id}/jobs/${jobEl.dataset.id}/auto-qa`, {}); toast(`自动质检完成（${r.model}），${r.applied.length} 张`); }
+    finally { state.p = await api('GET', `/api/projects/${state.p.id}`); renderJobs(); renderGallery(); }
     return;
   }
   if (e.target.dataset.act === 'reuse' && jobEl) {
@@ -379,6 +469,7 @@ async function onOutputClick(e) {
   else if (act === 'compare') compareDialog(o);
   else if (act === 'swap') swapDialog(o);
   else if (act === 'relight') relightDialog(o);
+  else if (act === 'live') liveDialog(o);
   else if (act === 'face') cropDialog({ source: o.file });
   else if (act === 'open') api('POST', `/api/projects/${state.p.id}/open`, { rel: o.file });
 }
@@ -484,7 +575,7 @@ function poll() {
       const before = JSON.stringify(state.p.jobs);
       state.p = fresh;
       $('#queueInfo').textContent = `中转站：${fresh.queue.active} 个进行中，${fresh.queue.pending} 个排队`;
-      if (JSON.stringify(fresh.jobs) !== before) { renderJobs(); if (state.tab === 'gallery') renderGallery(); }
+      if (JSON.stringify(fresh.jobs) !== before) { renderJobs(); if (state.tab === 'gallery') renderGallery(); if (state.tab === 'replica') renderStage(); }
     }
     poll();
   }, 2500);
@@ -534,6 +625,7 @@ $('#batchBtn').addEventListener('click', async () => {
   if (!presets.length) return toast('先勾选场景', true);
   const jobs = await api('POST', `/api/projects/${state.p.id}/batch`, {
     presets, model: $('#model').value, count: $('#count').value, faceId: $('#genFace').value || null, post: $('#post').value,
+    smartLight: $('#smartLight').checked, autoLight: $('#autoLight').checked, realism: $('#realism').value,
     aspect: $('[name=aspect]').value, face: $('[name=face]').value, extra: $('[name=extra]').value,
   });
   state.p = await api('GET', `/api/projects/${state.p.id}`);
@@ -615,8 +707,11 @@ $('#clientsBtn').addEventListener('click', showClients);
 // Opening any project leaves the clients page.
 $('#projects').addEventListener('click', hideClients, true);
 
+let dossierId = null;
 async function renderClients() {
   clientState = await api('GET', '/api/clients');
+  if (dossierId && clientState.clients.some(c => c.id === dossierId)) return renderDossier(dossierId);
+  dossierId = null;
   const { clients, types } = clientState;
   const expired = clients.filter(c => c.expired);
   $('#clientsList').innerHTML =
@@ -625,16 +720,55 @@ async function renderClients() {
     (clients.length ? `<div class="cards">${clients.map(c => `
       <div class="card client" data-id="${c.id}">
         <div class="body">
-          <div class="row" style="margin:0"><b class="grow">${esc(c.name)}</b><span class="tag ${c.type}">${esc(types[c.type])}</span></div>
+          <div class="row" style="margin:0"><b class="grow" data-act="dossier" style="cursor:pointer" title="打开客户档案">${esc(c.name)}</b><span class="tag ${c.type}">${esc(types[c.type])}</span></div>
           <div class="muted">${c.consent.given ? `已同意 ${esc(c.consent.date || '')}` : '<span class="bad">未确认同意</span>'} · 脸 ${c.faces.length} 张 · 身材 ${c.bodies.length} 张 · 订单 ${c.orders.length}</div>
           <div class="muted ${c.expired ? 'bad' : ''}">${c.faces.length + c.bodies.length ? (c.expired ? '已过保留期，请清理' : `资料保留到 ${c.expiresAt.slice(0, 10)}（还剩 ${Math.max(c.daysLeft, 0)} 天）`) : '没有存照片'}</div>
           ${c.notes ? `<div class="muted">${esc(c.notes)}</div>` : ''}
           <div class="style-thumbs">${[...c.faces, ...c.bodies].slice(0, 6).map(r => `<img src="${clientPhoto(c, r)}" loading="lazy">`).join('')}</div>
-          <div class="actions"><button data-act="edit">档案 / 照片</button><button data-act="order">新建订单</button><button data-act="delivered">标记已交付</button><button data-act="del">删除客户</button></div>
+          <div class="actions"><button data-act="dossier">客户档案</button><button data-act="edit">档案 / 照片</button><button data-act="order">新建订单</button><button data-act="delivered">标记已交付</button><button data-act="del">删除客户</button></div>
         </div></div>`).join('')}</div>` : '<p class="hint">还没有客户。点右上角「新建客户」。长期客户的照片会保留到约定期限，散单默认交付后 7 天提醒删除。</p>');
 }
 
 $('#newClientBtn').addEventListener('click', () => clientDialog(null));
+
+// 客户档案: client card + headline numbers + order timeline grouped by month (layout idea from a Pinterest patient-dashboard pin)
+const projFile = (pid, rel) => `/files/${pid}/${rel.split('/').map(encodeURIComponent).join('/')}`;
+async function renderDossier(id) {
+  const d = await api('GET', `/api/clients/${id}/dossier`);
+  const c = clientState.clients.find(x => x.id === id) || d.client;
+  const s = d.stats;
+  const types = clientState.types;
+  const tile = (n, label, tone = '') => `<div class="dos-tile ${tone}"><b>${n}</b><span>${label}</span></div>`;
+  const byMonth = {};
+  for (const o of d.orders) (byMonth[o.createdAt.slice(0, 7)] ||= []).push(o);
+  const timeline = d.orders.length ? Object.entries(byMonth).map(([m, list]) => `
+    <div class="dos-month"><span>${m}</span></div>
+    ${list.map(o => `<div class="dos-node"><i class="dos-dot"></i>
+      <div class="dos-order panel">
+        <div class="row" style="margin:0"><b class="grow">${esc(o.name)}</b><span class="muted">${o.createdAt.slice(5, 10)}</span></div>
+        <div class="muted">${o.images} 张成品${o.live ? ` · ${o.live} 个实况` : ''} · ${o.starred} 张 4 星以上 · 质检通过 ${o.qaPass}/${o.images}</div>
+        <div class="dos-thumbs">${o.thumbs.map(t => `<img src="${projFile(o.projectId, t)}" loading="lazy">`).join('') || '<span class="muted">还没有成品</span>'}</div>
+        <div class="actions"><button data-act="openorder" data-project="${o.projectId}">打开订单</button></div>
+      </div></div>`).join('')}`).join('') : '<p class="hint">还没有订单。点上面的「新建订单」。</p>';
+  $('#clientsList').innerHTML = `
+    <div class="client dos" data-id="${c.id}">
+      <button class="ghost" data-act="back">← 全部客户</button>
+      <section class="dos-hero panel">
+        <div class="dos-faces">${c.faces.slice(0, 3).map(r => `<img src="${clientPhoto(c, r)}">`).join('') || '<div class="dos-noface">无照片</div>'}</div>
+        <div class="dos-id">
+          <h2>${esc(c.name)} <span class="tag ${c.type}">${esc(types[c.type])}</span></h2>
+          <div class="muted">${c.consent.given ? `已同意 ${esc(c.consent.date || '')}${c.consent.scope ? ' · ' + esc(c.consent.scope) : ''}` : '<span class="bad">未确认同意</span>'}</div>
+          ${c.notes ? `<div class="muted">${esc(c.notes)}</div>` : ''}
+          <div class="actions" style="margin-top:10px"><button class="primary" style="width:auto;margin:0" data-act="order">新建订单</button><button data-act="edit">档案 / 照片</button><button data-act="delivered">标记已交付</button><button class="ghost" data-act="del">删除客户</button></div>
+        </div>
+        <div class="dos-stats">
+          ${tile(s.orders, '订单')}${tile(s.images, '成品图')}${tile(s.starred, '4 星以上')}${tile(s.qaPass, '质检通过')}${tile(s.live, '实况')}
+          ${tile(s.photos ? (s.expired ? '已到期' : Math.max(s.daysLeft, 0) + ' 天') : '—', s.photos ? '资料保留剩余' : '没存照片', s.expired ? 'bad' : '')}
+        </div>
+      </section>
+      <section class="dos-timeline">${timeline}</section>
+    </div>`;
+}
 
 $('#clientsList').addEventListener('click', async e => {
   if (e.target.id === 'purgeExpired') {
@@ -644,11 +778,14 @@ $('#clientsList').addEventListener('click', async e => {
     toast('已清理到期客户的照片'); renderClients(); loadProjects();
     return;
   }
+  if (e.target.dataset.act === 'back') { dossierId = null; renderClients(); return; }
+  if (e.target.closest('[data-act=openorder]')) { const el = e.target.closest('[data-act=openorder]'); hideClients(); await openProject(el.dataset.project); setTab('gallery'); return; }
   const card = e.target.closest('.client');
   if (!card) return;
   const c = clientState.clients.find(x => x.id === card.dataset.id);
   const act = e.target.dataset.act;
-  if (act === 'edit') clientDialog(c);
+  if (act === 'dossier') { dossierId = c.id; renderClients(); }
+  else if (act === 'edit') clientDialog(c);
   else if (act === 'delivered') { await api('POST', `/api/clients/${c.id}/delivered`); toast(`已标记交付，保留期从今天起算 ${c.consent.retainDays} 天`); renderClients(); }
   else if (act === 'order') {
     if (!c.consent.given) return toast('先在「档案 / 照片」里确认客户已同意', true);
@@ -733,3 +870,154 @@ const CHECKLIST = [
   '没有选用客户不同意的内容（服装、姿势、场景）',
   '已告诉客户这是 AI 生成，发布时按平台要求声明',
 ];
+
+// 按姿势库出一组: same prompt, model, face and post for each ticked pose (one job per pose).
+$('#poseSetBtn').addEventListener('click', () => {
+  const poses = Object.entries(state.meta.poses);
+  const body = openModal(`
+    <h3 style="margin-top:0">按姿势出一组（同一个人、同一套衣服）</h3>
+    <p class="hint">用当前出图表单里的提示词、模型、模特、写实包和后期；每个姿势出 1 张，提示词末尾会替换成该姿势。景别和服装不合适的姿势先别勾。</p>
+    <div class="row wrap" style="max-height:340px;overflow:auto">${poses.map(([k, v]) => `<label class="check" style="width:46%"><input type="checkbox" value="${k}"> ${esc(v.label)} <span class="muted">(${esc(state.meta.framings[v.framing] || v.framing)})</span></label>`).join('')}</div>
+    <button id="psGo" class="primary">开始出图</button>`);
+  body.querySelector('#psGo').addEventListener('click', async () => {
+    const poseIds = [...body.querySelectorAll('input:checked')].map(i => i.value);
+    if (!poseIds.length) return toast('先勾选姿势', true);
+    const model = state.meta.models.find(m => m.id === $('#model').value);
+    await api('POST', `/api/projects/${state.p.id}/pose-set`, {
+      poseIds, prompt: $('#promptBox').value, fields: formFields(), aspect: $('[name=aspect]').value, model: model.id, count: 1,
+      faceId: $('#genFace').value || null, post: $('#post').value, smartLight: $('#smartLight').checked, autoLight: $('#autoLight').checked, realism: $('#realism').value,
+    });
+    closeModal();
+    state.p = await api('GET', `/api/projects/${state.p.id}`);
+    toast(`已提交 ${poseIds.length} 个姿势`);
+    renderJobs(); renderGallery(); poll();
+  });
+});
+
+// ---- ⑥ 复刻台 -----------------------------------------------------------------
+// One screen: paste/drop a reference, pick the person, press the big button, compare results next to the reference.
+const rp = { original: null, file: null, faceId: localStorage.getItem('rp:face') || '', outfitMode: localStorage.getItem('rp:outfit') || 'keep', jobId: null };
+
+function fillReplicaFaces() {
+  const faces = state.p.faces;
+  if (!faces.some(f => f.id === rp.faceId)) rp.faceId = faces[0]?.id || '';
+  $('#rpChips').innerHTML = faces.length ? faces.map(f => `<button type="button" class="chip ${f.id === rp.faceId ? 'on' : ''}" data-face="${f.id}"><img src="${fileUrl(f.file)}" alt=""><span>${esc(f.name)}</span></button>`).join('') : '<span class="muted">先在「② 模特」里加模特</span>';
+  const face = faces.find(f => f.id === rp.faceId);
+  if (face && !$('#rpIdentity').dataset.touched) $('#rpIdentity').value = face.desc || '';
+  $$('.seg button').forEach(b => b.classList.toggle('on', b.dataset.outfit === rp.outfitMode));
+  $('#rpOutfit').hidden = rp.outfitMode !== 'change';
+  renderStage();
+}
+
+function showReplicaCrop(r) {
+  rp.original = r.original; rp.file = r.file;
+  $('#rpPreview').src = fileUrl(r.file) + '?t=' + Date.now();
+  $('#rpPreview').hidden = false;
+  $('#dropzone').classList.add('filled');
+  $('#rpCrop').hidden = false;
+  $('#rpTop').value = (r.top * 100).toFixed(1);
+  $('#rpBottom').value = (r.bottom * 100).toFixed(1);
+  $('#rpNote').textContent = r.auto ? '已自动识别照片范围' : '没识别出界面，用了默认范围，请核对';
+  fillReplicaFaces();
+}
+
+async function uploadReference(file) {
+  if (!file || !file.type.startsWith('image/')) return toast('只支持图片', true);
+  const dataUrl = await new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(file); });
+  $('#rpNote').textContent = '识别中…'; $('#rpCrop').hidden = false;
+  showReplicaCrop(await api('POST', `/api/projects/${state.p.id}/replica-ref`, { dataUrl }));
+  state.p = await api('GET', `/api/projects/${state.p.id}`);
+}
+
+const dz = $('#dropzone');
+dz.addEventListener('click', e => { if (!e.target.closest('.crop-bar')) $('#rpUpload').click(); });
+dz.addEventListener('keydown', e => { if (e.key === 'Enter') $('#rpUpload').click(); });
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('over'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('over'));
+dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('over'); uploadReference(e.dataTransfer.files[0]); });
+$('#rpUpload').addEventListener('change', e => { uploadReference(e.target.files[0]); e.target.value = ''; });
+// paste anywhere while this tab is open
+document.addEventListener('paste', e => {
+  if (state.tab !== 'replica' || !state.p || e.target.matches('input, textarea')) return;
+  const item = [...(e.clipboardData?.items || [])].find(i => i.type.startsWith('image/'));
+  if (item) { e.preventDefault(); uploadReference(item.getAsFile()); }
+});
+
+$('#rpRecrop').addEventListener('click', async () => {
+  showReplicaCrop(await api('POST', `/api/projects/${state.p.id}/replica-recrop`, { original: rp.original, top: Number($('#rpTop').value) / 100, bottom: Number($('#rpBottom').value) / 100 }));
+});
+$('#rpChips').addEventListener('click', e => {
+  const b = e.target.closest('[data-face]');
+  if (!b) return;
+  rp.faceId = b.dataset.face; localStorage.setItem('rp:face', rp.faceId);
+  $('#rpIdentity').value = ''; delete $('#rpIdentity').dataset.touched;
+  fillReplicaFaces();
+});
+$('.stage-side .seg').addEventListener('click', e => {
+  const b = e.target.closest('[data-outfit]');
+  if (!b) return;
+  rp.outfitMode = b.dataset.outfit; localStorage.setItem('rp:outfit', rp.outfitMode);
+  fillReplicaFaces();
+});
+$('#rpIdentity').addEventListener('input', e => { e.target.dataset.touched = '1'; });
+
+$('#rpGo').addEventListener('click', async () => {
+  if (!rp.file) return toast('先粘贴或拖入参考图', true);
+  if (!rp.faceId) return toast('先选一个人', true);
+  $('#rpGo').disabled = true;
+  try {
+    const job = await api('POST', `/api/projects/${state.p.id}/replica`, {
+      source: rp.file, faceId: rp.faceId, count: $('#rpCount').value, identity: $('#rpIdentity').value, hair: $('#rpHair').value,
+      outfitMode: rp.outfitMode, outfit: $('#rpOutfit').value, removeUi: $('#rpRemoveUi').checked, keepExpression: $('#rpKeepExpr').checked,
+      model: $('#model').value, post: $('#post').value, smartLight: $('#smartLight').checked, autoLight: $('#autoLight').checked, realism: $('#realism').value,
+    });
+    rp.jobId = job.id;
+    state.p = await api('GET', `/api/projects/${state.p.id}`);
+    toast('已提交，结果会出现在右边，约 1–2 分钟');
+    renderStage(); poll();
+  } finally { $('#rpGo').disabled = false; }
+});
+
+// side-by-side results of the latest replica job: reference first, then each result with quick actions
+function renderStage() {
+  const box = $('#rpResults');
+  if (!box) return;
+  const job = state.p?.jobs.find(j => j.id === rp.jobId) || [...(state.p?.jobs || [])].reverse().find(j => j.replica);
+  if (!job) { box.innerHTML = ''; return; }
+  const waiting = ['queued', 'running'].includes(job.status) ? job.count - job.outputs.length : 0;
+  const statusText = { queued: '排队中', running: '生成中', done: '完成', partial: '部分失败', failed: '失败' }[job.status];
+  const verdictText = { pass: '质检通过', retry: '建议重出', fail: '不通过', unsure: '有项看不清' };
+  box.innerHTML = `<div class="row" style="margin:0"><b>结果</b><span class="status ${job.status}">${statusText}</span><span class="muted">${esc(job.model)} · ${job.outputs.length}/${job.count} 张</span><span class="grow"></span><button class="ghost small" data-rpact="again" data-job="${job.id}">再来一批</button></div>
+    ${(job.errors || []).map(e => `<div class="err">⚠ ${esc(e)}</div>`).join('')}
+    <div class="cmp">
+      <figure><img src="${fileUrl(job.replica.source)}" data-rpact="zoom" alt=""><figcaption>参考图</figcaption></figure>
+      ${job.outputs.map(o => `<figure data-file="${esc(o.file)}"><img src="${fileUrl(o.final || o.file)}" data-rpact="zoom" alt="">
+        <figcaption>${o.qa ? `<span class="qa-inline ${esc(o.qa.verdict)}">${verdictText[o.qa.verdict] || ''}</span>` : ''}
+        <span class="quick"><button data-rpact="light">补光</button><button data-rpact="live">实况</button><button data-rpact="qa" data-job="${job.id}">质检</button><button data-rpact="star">${o.star >= 4 ? '★' : '☆'}</button></span></figcaption></figure>`).join('')}
+      ${Array.from({ length: waiting }, () => '<figure><div class="placeholder">生成中…</div></figure>').join('')}
+    </div>`;
+}
+
+$('#rpResults').addEventListener('click', async e => {
+  const b = e.target.closest('[data-rpact]');
+  if (!b) return;
+  const fig = b.closest('figure');
+  const o = fig && state.p.jobs.flatMap(j => j.outputs).find(x => x.file === fig.dataset.file);
+  const act = b.dataset.rpact;
+  if (act === 'zoom') return zoom(b.src);
+  if (act === 'again') {
+    await api('POST', `/api/projects/${state.p.id}/jobs/${b.dataset.job}/rerun`, {});
+    state.p = await api('GET', `/api/projects/${state.p.id}`);
+    renderStage(); poll();
+    return toast('已再来一批');
+  }
+  if (!o) return;
+  if (act === 'light') relightDialog(o);
+  else if (act === 'live') liveDialog(o);
+  else if (act === 'star') { Object.assign(o, await api('POST', `/api/projects/${state.p.id}/star`, { file: o.file, star: o.star >= 4 ? 0 : 4 })); renderStage(); }
+  else if (act === 'qa') {
+    b.disabled = true; b.textContent = '质检中…';
+    try { const r = await api('POST', `/api/projects/${state.p.id}/jobs/${b.dataset.job}/auto-qa`, {}); toast(`自动质检完成（${r.model}）`); }
+    finally { state.p = await api('GET', `/api/projects/${state.p.id}`); renderStage(); }
+  }
+});
