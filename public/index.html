@@ -116,7 +116,11 @@
         <div id="dropzone" class="drop" tabindex="0">
           <div class="drop-hint"><b>粘贴或拖入参考图</b><span>Ctrl + V 粘贴截屏，或把图片拖到这里，或点一下选择文件</span></div>
           <input id="rpUpload" type="file" accept="image/*" hidden>
-          <img id="rpPreview" alt="" hidden>
+          <div id="cropStage" hidden>
+            <img id="rpPreview" alt="" draggable="false">
+            <div class="shade s-top"></div><div class="shade s-bot"></div>
+            <div class="cl" id="clTop" title="拖动：照片上边"></div><div class="cl" id="clBot" title="拖动：照片下边"></div>
+          </div>
           <div id="rpCrop" class="crop-bar" hidden>
             <span id="rpNote" class="muted"></span>
             <label>上边 <input id="rpTop" type="number" step="0.5" min="0" max="80"> %</label>

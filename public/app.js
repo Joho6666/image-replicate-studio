@@ -911,15 +911,50 @@ function fillReplicaFaces() {
 
 function showReplicaCrop(r) {
   rp.original = r.original; rp.file = r.file;
-  $('#rpPreview').src = fileUrl(r.file) + '?t=' + Date.now();
-  $('#rpPreview').hidden = false;
+  rp.top = r.top; rp.bottom = r.bottom;
+  const img = $('#rpPreview');
+  img.onload = placeCropLines;
+  img.src = fileUrl(r.original) + '?t=' + Date.now();
+  $('#cropStage').hidden = false;
   $('#dropzone').classList.add('filled');
   $('#rpCrop').hidden = false;
   $('#rpTop').value = (r.top * 100).toFixed(1);
   $('#rpBottom').value = (r.bottom * 100).toFixed(1);
-  $('#rpNote').textContent = r.auto ? '已自动识别照片范围' : '没识别出界面，用了默认范围，请核对';
+  $('#rpNote').textContent = r.auto ? '已自动识别照片范围，拖两条线可微调' : '没识别出界面，用了默认范围，拖两条线调整';
   fillReplicaFaces();
 }
+
+// the two lines are positioned in % of the stage; dragging updates the numbers and, on release, re-crops on the server
+function placeCropLines() {
+  $('#clTop').style.top = (rp.top * 100) + '%';
+  $('#clBot').style.top = (rp.bottom * 100) + '%';
+  $('.s-top').style.height = (rp.top * 100) + '%';
+  $('.s-bot').style.height = ((1 - rp.bottom) * 100) + '%';
+}
+let cropTimer;
+function bindCropLine(el, which) {
+  el.addEventListener('pointerdown', e => {
+    e.preventDefault(); e.stopPropagation();
+    el.setPointerCapture(e.pointerId);
+    const stage = $('#cropStage').getBoundingClientRect();
+    const move = ev => {
+      const y = Math.min(Math.max((ev.clientY - stage.top) / stage.height, 0), 1);
+      if (which === 'top') rp.top = Math.min(y, rp.bottom - 0.1); else rp.bottom = Math.max(y, rp.top + 0.1);
+      $('#rpTop').value = (rp.top * 100).toFixed(1); $('#rpBottom').value = (rp.bottom * 100).toFixed(1);
+      placeCropLines();
+    };
+    const up = () => {
+      el.removeEventListener('pointermove', move); el.removeEventListener('pointerup', up);
+      clearTimeout(cropTimer);
+      cropTimer = setTimeout(async () => {
+        const r = await api('POST', `/api/projects/${state.p.id}/replica-recrop`, { original: rp.original, top: rp.top, bottom: rp.bottom });
+        rp.file = r.file; $('#rpNote').textContent = '已按新范围裁剪';
+      }, 250);
+    };
+    el.addEventListener('pointermove', move); el.addEventListener('pointerup', up);
+  });
+}
+bindCropLine($('#clTop'), 'top'); bindCropLine($('#clBot'), 'bottom');
 
 async function uploadReference(file) {
   if (!file || !file.type.startsWith('image/')) return toast('只支持图片', true);
@@ -930,7 +965,7 @@ async function uploadReference(file) {
 }
 
 const dz = $('#dropzone');
-dz.addEventListener('click', e => { if (!e.target.closest('.crop-bar')) $('#rpUpload').click(); });
+dz.addEventListener('click', e => { if (!e.target.closest('.crop-bar, #cropStage')) $('#rpUpload').click(); });
 dz.addEventListener('keydown', e => { if (e.key === 'Enter') $('#rpUpload').click(); });
 dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('over'); });
 dz.addEventListener('dragleave', () => dz.classList.remove('over'));
@@ -944,7 +979,7 @@ document.addEventListener('paste', e => {
 });
 
 $('#rpRecrop').addEventListener('click', async () => {
-  showReplicaCrop(await api('POST', `/api/projects/${state.p.id}/replica-recrop`, { original: rp.original, top: Number($('#rpTop').value) / 100, bottom: Number($('#rpBottom').value) / 100 }));
+  { const r = await api('POST', `/api/projects/${state.p.id}/replica-recrop`, { original: rp.original, top: Number($('#rpTop').value) / 100, bottom: Number($('#rpBottom').value) / 100 }); showReplicaCrop(r); }
 });
 $('#rpChips').addEventListener('click', e => {
   const b = e.target.closest('[data-face]');
@@ -993,7 +1028,7 @@ function renderStage() {
       <figure><img src="${fileUrl(job.replica.source)}" data-rpact="zoom" alt=""><figcaption>参考图</figcaption></figure>
       ${job.outputs.map(o => `<figure data-file="${esc(o.file)}"><img src="${fileUrl(o.final || o.file)}" data-rpact="zoom" alt="">
         <figcaption>${o.qa ? `<span class="qa-inline ${esc(o.qa.verdict)}">${verdictText[o.qa.verdict] || ''}</span>` : ''}
-        <span class="quick"><button data-rpact="light">补光</button><button data-rpact="live">实况</button><button data-rpact="qa" data-job="${job.id}">质检</button><button data-rpact="star">${o.star >= 4 ? '★' : '☆'}</button></span></figcaption></figure>`).join('')}
+        <span class="quick"><button data-rpact="compare">对比</button><button data-rpact="light">补光</button><button data-rpact="live">实况</button><button data-rpact="qa" data-job="${job.id}">质检</button><button data-rpact="star">${o.star >= 4 ? '★' : '☆'}</button></span></figcaption></figure>`).join('')}
       ${Array.from({ length: waiting }, () => '<figure><div class="placeholder">生成中…</div></figure>').join('')}
     </div>`;
 }
@@ -1004,7 +1039,8 @@ $('#rpResults').addEventListener('click', async e => {
   const fig = b.closest('figure');
   const o = fig && state.p.jobs.flatMap(j => j.outputs).find(x => x.file === fig.dataset.file);
   const act = b.dataset.rpact;
-  if (act === 'zoom') return zoom(b.src);
+  if (act === 'zoom') return viewer(b.src);
+  if (act === 'compare') { const j = state.p.jobs.find(x => x.id === rp.jobId) || [...state.p.jobs].reverse().find(x => x.replica); return viewer(fileUrl(o.final || o.file), fileUrl(j.replica.source)); }
   if (act === 'again') {
     await api('POST', `/api/projects/${state.p.id}/jobs/${b.dataset.job}/rerun`, {});
     state.p = await api('GET', `/api/projects/${state.p.id}`);
@@ -1021,3 +1057,42 @@ $('#rpResults').addEventListener('click', async e => {
     finally { state.p = await api('GET', `/api/projects/${state.p.id}`); renderStage(); }
   }
 });
+
+// ---- 画布查看器：滚轮缩放、拖动平移、前后对比滑块 ----------------------------------
+function viewer(src, refSrc) {
+  const body = openModal(`
+    <div class="vw" id="vw">
+      <div class="vw-stage" id="vwStage"><div class="vw-layer" id="vwLayer">
+        <img src="${src}" alt="" draggable="false">
+        ${refSrc ? `<img class="vw-ref" id="vwRef" src="${refSrc}" alt="" draggable="false">` : ''}
+      </div></div>
+      ${refSrc ? '<div class="vw-slider"><span>参考图</span><input id="vwRange" type="range" min="0" max="100" value="50"><span>结果</span></div>' : ''}
+      <div class="vw-help">滚轮缩放 · 拖动平移 · 双击复位</div>
+    </div>`);
+  const stage = body.querySelector('#vwStage'), layer = body.querySelector('#vwLayer');
+  let k = 1, x = 0, y = 0;
+  const apply = () => { layer.style.transform = `translate(${x}px, ${y}px) scale(${k})`; };
+  stage.addEventListener('wheel', e => {
+    e.preventDefault();
+    const r = stage.getBoundingClientRect(), cx = e.clientX - r.left - r.width / 2, cy = e.clientY - r.top - r.height / 2;
+    const nk = Math.min(Math.max(k * (e.deltaY < 0 ? 1.15 : 1 / 1.15), 1), 8);
+    x = cx - (cx - x) * (nk / k); y = cy - (cy - y) * (nk / k); k = nk;
+    if (k === 1) { x = 0; y = 0; }
+    apply();
+  }, { passive: false });
+  stage.addEventListener('pointerdown', e => {
+    if (e.target.closest('input')) return;
+    stage.setPointerCapture(e.pointerId);
+    let lx = e.clientX, ly = e.clientY;
+    const move = ev => { x += ev.clientX - lx; y += ev.clientY - ly; lx = ev.clientX; ly = ev.clientY; apply(); };
+    const up = () => { stage.removeEventListener('pointermove', move); stage.removeEventListener('pointerup', up); };
+    stage.addEventListener('pointermove', move); stage.addEventListener('pointerup', up);
+  });
+  stage.addEventListener('dblclick', () => { k = 1; x = 0; y = 0; apply(); });
+  const range = body.querySelector('#vwRange'), ref = body.querySelector('#vwRef');
+  if (range) {
+    const set = () => { ref.style.clipPath = `inset(0 ${100 - range.value}% 0 0)`; };
+    range.addEventListener('input', set); set();
+  }
+}
+window.__viewer = viewer; // handy for manual checks in the console
