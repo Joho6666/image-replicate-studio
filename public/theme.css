@@ -1,0 +1,132 @@
+/* ============================================================================================
+   暗房手记 / Darkroom Notebook — editorial layer over style.css + board.css (loaded last).
+   Idea: the studio is a photographer's contact-sheet notebook. Warm paper with grain, ink text,
+   one sage accent kept from the CALM/KIT palette; display in Noto Serif SC, metadata in Cascadia
+   Mono like frame numbers on a contact sheet, hand-written hints in LXGW WenKai like pencil notes.
+   All fonts are installed locally (C:/Windows/Fonts); nothing is downloaded.
+   ============================================================================================ */
+:root {
+  --f-display: "Noto Serif SC", "Source Han Serif SC", "Songti SC", Georgia, serif;
+  --f-body: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --f-mono: "Cascadia Mono", "Cascadia Code", Consolas, monospace;
+  --f-hand: "LXGW WenKai", "Kaiti SC", KaiTi, var(--f-body);
+  --bg: #f4efe6; --panel: #fbf8f2; --surface: #ece5d8; --ink: #1f2420; --muted: #807a6f; --line: #e0d7c6; --line-strong: #cfc3ad;
+  --pill: #e8e0d1; --pill-hover: #ddd2bf; --deep: #22302a;
+  --accent: #4b6656; --accent-hover: #3b5245;
+  --lift: 0 1px 0 rgba(255,255,255,.7) inset, 0 1px 2px rgba(50,38,20,.06), 0 10px 30px -12px rgba(50,38,20,.18);
+  --ease: cubic-bezier(.2,.7,.2,1);
+  font-family: var(--f-body);
+  font-feature-settings: "tnum" 1;
+}
+
+/* paper grain over everything, never intercepts clicks */
+body { background: var(--bg); }
+body::after {
+  content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 100; opacity: .07; mix-blend-mode: multiply;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='180' height='180'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.2  0 0 0 0 0.16  0 0 0 0 0.1  0 0 0 .9 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>");
+}
+::selection { background: rgba(75,102,86,.22); }
+
+/* ---- brand ------------------------------------------------------------------------------- */
+#sidebar { background: var(--panel); border-right: 1px solid var(--line); box-shadow: 1px 0 0 rgba(255,255,255,.6) inset; }
+#sidebar h1 { gap: 12px; margin: 2px 4px 10px; align-items: center; }
+#sidebar h1::before { content: none; }
+.brand-mark { width: 34px; height: 34px; border-radius: 50%; flex: none; position: relative;
+  background: radial-gradient(circle at 50% 50%, var(--bg) 0 30%, transparent 31%),
+              conic-gradient(from 20deg, var(--deep) 0 14%, var(--accent) 14% 28%, var(--deep) 28% 42%, var(--accent) 42% 56%, var(--deep) 56% 70%, var(--accent) 70% 84%, var(--deep) 84% 100%);
+  box-shadow: 0 0 0 3px var(--panel), 0 0 0 4px var(--line-strong); }
+.brand-word { display: flex; flex-direction: column; line-height: 1.05; font-family: var(--f-display); font-weight: 800; font-size: 22px; letter-spacing: .02em; }
+.brand-word small { font-family: var(--f-mono); font-weight: 400; font-size: 10px; letter-spacing: .22em; text-transform: uppercase; color: var(--muted); margin-top: 5px; }
+
+/* ---- sidebar list: an index of rolls ----------------------------------------------------- */
+.new-project input { background: var(--bg); border: 1px solid var(--line); }
+.clients-btn { font-family: var(--f-body); font-weight: 600; border-radius: 12px; padding: 9px 12px; }
+#projects { counter-reset: roll; margin-top: 4px; }
+#projects li { counter-increment: roll; position: relative; padding: 10px 12px 10px 40px; border-radius: 12px; font-weight: 600; transition: background .15s var(--ease); }
+#projects li::before { content: counter(roll, decimal-leading-zero); position: absolute; left: 12px; top: 11px; font-family: var(--f-mono); font-size: 11px; font-weight: 400; color: var(--muted); }
+#projects li small { font-family: var(--f-mono); font-size: 10.5px; letter-spacing: .02em; }
+#projects li.active { background: var(--deep); color: #f4efe6; box-shadow: 0 8px 20px -10px rgba(34,48,42,.6); }
+#projects li.active::before { color: #9fb4a6; }
+.health { font-family: var(--f-mono); font-size: 11px; line-height: 2; border-top: 1px dashed var(--line-strong); padding-top: 10px; }
+.health .dot { width: 7px; height: 7px; box-shadow: 0 0 0 3px rgba(0,0,0,.03); }
+
+/* ---- workspace head: big serif title, indexed tabs ---------------------------------------- */
+#main { padding: 0 34px 48px; }
+.ws-head { background: color-mix(in srgb, var(--bg) 88%, transparent); border-bottom: 1px solid var(--line); padding: 18px 0 14px; margin-bottom: 14px; gap: 22px; }
+.proj-name, .ws-head h2 { font-family: var(--f-display); font-weight: 800; font-size: 28px; letter-spacing: .01em; color: var(--ink); }
+.proj-name { width: 300px; }
+#tabs { gap: 2px; }
+#tabs button { background: transparent; border-radius: 10px; padding: 8px 12px 9px; font-weight: 600; color: #5d5a52; position: relative; display: inline-flex; align-items: baseline; gap: 6px; }
+#tabs button .tn { font-family: var(--f-mono); font-size: 10.5px; font-weight: 400; color: var(--muted); letter-spacing: .04em; }
+#tabs button:hover { background: var(--pill); color: var(--ink); }
+#tabs button.active { background: transparent; color: var(--ink); }
+#tabs button.active .tn { color: var(--accent); }
+#tabs button.active::after { content: ""; position: absolute; left: 12px; right: 12px; bottom: 1px; height: 2px; border-radius: 2px; background: var(--ink); }
+
+/* ---- type details -------------------------------------------------------------------------- */
+.hint, .muted { font-family: var(--f-hand); letter-spacing: .01em; }
+.hint { font-size: 13px; color: #8a7f6c; }
+label { color: #4f4b43; }
+h2, h3, .case h3, .dos-id h2 { font-family: var(--f-display); }
+.job-head, .status, .tag, .qa-chip, .dos-tile span, .dos-month span, #bdSaved { font-family: var(--f-mono); }
+.job-head b { font-family: var(--f-display); font-size: 14px; }
+.dos-tile b { font-family: var(--f-display); font-weight: 800; font-size: 28px; }
+textarea, input, select { font-family: var(--f-body); }
+#promptBox, .job details pre, .case pre { font-family: var(--f-mono); font-size: 12px; line-height: 1.65; }
+
+/* ---- controls -------------------------------------------------------------------------------- */
+button, .btn { transition: background .15s var(--ease), transform .15s var(--ease), box-shadow .15s var(--ease); }
+button:active { transform: translateY(1px); }
+button.primary { background: var(--deep); letter-spacing: .04em; box-shadow: 0 10px 22px -12px rgba(34,48,42,.8); }
+button.primary:hover { background: #1a2620; }
+input:not([type=checkbox]):not([type=radio]), select, textarea { background: #fffdf8; border-color: var(--line-strong); transition: border-color .15s, box-shadow .15s; }
+input:not([type=checkbox]):not([type=radio]):focus, select:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(75,102,86,.14); outline: none; }
+/* checkboxes become small toggle chips */
+label.check { padding: 6px 12px 6px 8px; border-radius: 999px; background: transparent; box-shadow: inset 0 0 0 1px var(--line-strong); transition: background .15s, box-shadow .15s; cursor: pointer; }
+label.check:has(input:checked) { background: var(--deep); color: #f4efe6; box-shadow: none; }
+label.check input[type=checkbox] { appearance: none; width: 14px; height: 14px; border-radius: 50%; margin: 0; border: 1.5px solid currentColor; display: grid; place-items: center; }
+label.check input[type=checkbox]:checked { background: #9fb4a6; border-color: #9fb4a6; box-shadow: inset 0 0 0 3px var(--deep); }
+
+/* ---- panels feel like mounted prints -------------------------------------------------------- */
+.panel, .case, .dos-order { background: var(--panel); border: 1px solid var(--line); box-shadow: var(--lift); }
+.modal-body { background: var(--panel); border: 1px solid var(--line); }
+.failbox { background: transparent; border: 1px dashed var(--line-strong); }
+.failbox summary { font-family: var(--f-hand); font-weight: 400; font-size: 14px; }
+.failbox summary::before { content: "●"; color: var(--warn); font-size: 9px; margin-right: 8px; vertical-align: 2px; }
+
+/* ---- the image wall: prints on a table -------------------------------------------------------- */
+.card { border-radius: 14px; background: var(--surface); box-shadow: 0 1px 2px rgba(50,38,20,.08); transition: transform .35s var(--ease), box-shadow .35s var(--ease); }
+.card:hover { transform: translateY(-3px); box-shadow: 0 18px 36px -18px rgba(50,38,20,.45); }
+.card img { transition: filter .3s var(--ease); }
+.card:hover img { filter: saturate(1.04) contrast(1.02); }
+.card .body { background: linear-gradient(180deg, rgba(31,36,32,.42) 0%, rgba(31,36,32,0) 26%, rgba(31,36,32,0) 54%, rgba(31,36,32,.82) 100%); }
+.card .actions button, .card .actions a { font-family: var(--f-body); background: rgba(251,248,242,.94); }
+.qa-chip { font-size: 10.5px; letter-spacing: .04em; background: rgba(251,248,242,.95); }
+@media (prefers-reduced-motion: no-preference) {
+  .wcol .card, .cards .card { animation: develop .7s var(--ease) both; }
+  .wcol .card:nth-child(1) { animation-delay: .02s } .wcol .card:nth-child(2) { animation-delay: .1s } .wcol .card:nth-child(3) { animation-delay: .18s }
+  .wcol .card:nth-child(4) { animation-delay: .26s } .wcol .card:nth-child(5) { animation-delay: .34s } .wcol .card:nth-child(n+6) { animation-delay: .4s }
+}
+/* like a print coming up in the developer tray */
+@keyframes develop { from { opacity: 0; transform: translateY(10px); filter: brightness(1.25) contrast(.7) saturate(.4); } to { opacity: 1; transform: none; filter: none; } }
+
+/* ---- empty state -------------------------------------------------------------------------------- */
+.empty { font-family: var(--f-display); font-size: 22px; color: #a39a88; letter-spacing: .04em; }
+.empty::before { content: "ROLL 00"; display: block; font-family: var(--f-mono); font-size: 11px; letter-spacing: .3em; color: var(--line-strong); margin-bottom: 10px; }
+
+/* ---- workbench gets the same paper -------------------------------------------------------------- */
+#bdCanvas { background-color: #ece5d8; background-image: radial-gradient(rgba(50,38,20,.18) 1px, transparent 1px); }
+.bd-node { background: var(--panel); }
+.bd-head b { font-family: var(--f-display); }
+.bd-port-row { font-family: var(--f-mono); }
+
+@media (max-width: 820px) {
+  .brand-word { font-size: 17px; } .brand-word small { display: none; } .brand-mark { width: 26px; height: 26px; }
+  .proj-name, .ws-head h2 { font-size: 22px; }
+  #main { padding: 0 14px 30px; }
+  #projects li { padding-left: 12px; } #projects li::before { display: none; }
+}
+
+/* the project title is an inline-editable heading, not a form box */
+.ws-head input.proj-name:not(:focus) { background: transparent; border-color: transparent; box-shadow: none; padding-left: 0; }
+.ws-head input.proj-name:hover:not(:focus) { background: rgba(255,253,248,.5); }

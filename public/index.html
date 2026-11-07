@@ -6,10 +6,11 @@
 <title>图片复刻 Studio</title>
 <link rel="stylesheet" href="/style.css">
 <link rel="stylesheet" href="/board.css">
+<link rel="stylesheet" href="/theme.css">
 </head>
 <body>
 <aside id="sidebar">
-  <h1>图片复刻 Studio</h1>
+  <h1><span class="brand-mark" aria-hidden="true"></span><span class="brand-word">图片复刻<small>Studio · 暗房</small></span></h1>
   <div class="new-project">
     <input id="newName" placeholder="新项目名，例如 韩女街拍">
     <button id="newBtn">新建</button>
@@ -31,13 +32,13 @@
     <header class="ws-head">
       <input id="projName" class="proj-name">
       <nav id="tabs">
-        <button data-tab="case" class="active">① 案例</button>
-        <button data-tab="model">② 模特</button>
-        <button data-tab="gen">③ 出图</button>
-        <button data-tab="gallery">④ 画廊</button>
-        <button data-tab="styles">⑤ 风格卡</button>
-        <button data-tab="replica">⑥ 复刻台</button>
-        <button data-tab="board">⑦ 工作台</button>
+        <button data-tab="case" class="active"><span class="tn">01</span>案例</button>
+        <button data-tab="model"><span class="tn">02</span>模特</button>
+        <button data-tab="gen"><span class="tn">03</span>出图</button>
+        <button data-tab="gallery"><span class="tn">04</span>画廊</button>
+        <button data-tab="styles"><span class="tn">05</span>风格卡</button>
+        <button data-tab="replica"><span class="tn">06</span>复刻台</button>
+        <button data-tab="board"><span class="tn">07</span>工作台</button>
       </nav>
       <button id="openDir" class="ghost">打开项目文件夹</button>
     </header>
@@ -117,16 +118,17 @@
       <div id="bdWrap">
         <aside id="bdAssets">
           <div class="bd-tabs"><button data-src="outputs" class="active">成品</button><button data-src="refs">参考图</button><button data-src="faces">模特</button></div>
-          <p class="hint">拖到右边画布上；也可以直接把电脑里的图片拖进画布。</p>
+          <p class="hint">拖进右边卡片的虚线框里；电脑里的图片也能直接拖进来。</p>
           <div id="bdAssetList"></div>
         </aside>
         <div id="bdMain">
           <div id="bdBar">
-            <button data-add="prompt">＋ 提示词</button><button data-add="model">＋ 模特</button><button data-add="replica" class="bd-accent">＋ 复刻 / 生成</button><button data-add="relight">＋ 打光</button><button data-add="live">＋ 实况</button>
-            <span class="grow"></span><span id="bdSaved" class="muted"></span><button data-act="fit" class="ghost">回到全部</button>
+            <button data-add="replica" class="bd-accent">＋ 复刻卡</button><button data-add="relight">＋ 打光</button><button data-add="live">＋ 实况</button>
+            <button data-act="undo" class="ghost" title="撤销（Ctrl+Z）" disabled>↶ 撤销</button><button data-act="redo" class="ghost" title="重做（Ctrl+Shift+Z）" disabled>↷ 重做</button>
+            <span class="grow"></span><span id="bdSaved" class="muted"></span><button data-act="tidy" class="ghost">整理</button><button data-act="fit" class="ghost">回到全部</button>
           </div>
-          <div id="bdCanvas" tabindex="0"><div id="bdWorld"><svg id="bdWires"></svg></div></div>
-          <p class="hint">拖动空白处平移，滚轮缩放；从节点右侧的圆点拖到另一个节点左侧的圆点就是连线，点连线删除。复刻节点：接「场景图」和「模特」是复刻换人；只接「提示词」和「参考图」是普通生成。</p>
+          <div id="bdCanvas" tabindex="0"><div id="bdWorld"><svg id="bdWires"></svg></div><div id="bdEmpty" hidden></div></div>
+          <p class="hint bd-foot">把左边的图拖进卡片的虚线框；拖空白处平移，滚轮缩放。快捷键：Ctrl+Z 撤销，Ctrl+D 复制选中的卡，Delete 删除。</p>
         </div>
       </div>
     </section>
