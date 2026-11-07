@@ -15,8 +15,9 @@ const TYPES = {
   replica: { title: '复刻卡', ins: [['scene', '场景图', 'img', 1], ['face', '模特', 'face', 1], ['refs', '参考图', 'img', 3], ['text', '提示词', 'text', 9]], outs: [['img', '结果', 'img']] },
   relight: { title: '打光', ins: [['src', '原图', 'img', 1]], outs: [['img', '结果', 'img']] },
   live: { title: '实况', ins: [['src', '原图', 'img', 1]], outs: [] },
+  retouch: { title: '修图', ins: [['src', '原图', 'img', 1]], outs: [['img', '结果', 'img']] },
 };
-const CARD_W = { replica: 330, relight: 280, live: 280, image: 220, model: 220, prompt: 240 };
+const CARD_W = { replica: 330, relight: 280, live: 280, retouch: 300, image: 220, model: 220, prompt: 240 };
 const GAP = 60;
 
 let board = { nodes: [], edges: [], view: { x: 40, y: 40, k: 1 } };
@@ -78,7 +79,7 @@ function outValue(n) {
   if (n.type === 'image') return n.data.file;
   if (n.type === 'model') return n.data.faceId;
   if (n.type === 'prompt') return (n.data.text || '').trim();
-  if (n.type === 'replica' || n.type === 'relight') return n.data.pick || resultFiles(n)[0] || null;
+  if (['replica', 'relight', 'retouch'].includes(n.type)) return n.data.pick || resultFiles(n)[0] || null;
   return null;
 }
 const wired = (n, port) => board.edges.filter(e => e.to.node === n.id && e.to.port === port).map(e => outValue(nodeById(e.from.node))).filter(Boolean);
@@ -98,15 +99,43 @@ function modeOf(n) {
   return { k: 'none', label: '待填', tip: scene ? '再选一个模特就能复刻换人' : '拖一张场景图进来，再选模特' };
 }
 
+// ---- 修图卡: takes the whole batch of the card wired into it (or one image dropped in) ----
+let recipes = [];
+const upstreamOf = n => nodeById(board.edges.find(e => e.to.node === n.id && e.to.port === 'src')?.from.node);
+function srcList(n) {
+  if (n.data.src) return [n.data.src];
+  const u = upstreamOf(n);
+  if (!u) return [];
+  const all = ['replica', 'relight', 'retouch'].includes(u.type) ? resultFiles(u) : [];
+  return all.length ? all : [outValue(u)].filter(Boolean);
+}
+// the scene image of the nearest replica card upstream: what 按场景图配色 matches to
+function sceneOf(n, depth = 0) {
+  if (!n || depth > 5) return null;
+  if (n.type === 'replica') return val(n, 'scene');
+  return sceneOf(upstreamOf(n), depth + 1);
+}
+const recipeOf = n => recipes.find(r => r.id === n.data.recipeId) || recipes[0];
+// rough in-browser preview of the sliders (the real result is rendered by ffmpeg on run)
+function previewFilter(adj = {}) {
+  const b = adj.bright || 0, c = adj.contrast || 0, s = adj.sat || 0, t = adj.temp || 0;
+  return [`brightness(${1 + b * 0.006})`, `contrast(${1 + c * 0.008})`, `saturate(${1 + s * 0.012})`, t > 0 ? `sepia(${t / 220})` : t < 0 ? `hue-rotate(${t * 0.35}deg)` : ''].join(' ');
+}
+const ADJ = () => S().state.meta.adjust || {};
+
 // ---- rendering ---------------------------------------------------------------
 const slotHtml = (n, slot, file, label, big = false) => file
   ? `<div class="bd-slot filled ${big ? 'big' : ''}" data-slot="${slot}"><img src="${fileUrl(file)}" data-zoom="${esc(file)}"><button class="bd-clear" data-act="clear" data-slot="${slot}" title="移除">×</button></div>`
   : `<div class="bd-slot ${big ? 'big' : ''}" data-slot="${slot}"><span>${label}</span></div>`;
+const isBusy = j => ['queued', 'running'].includes(j?.status);
+const clock = ms => { const s = Math.max(0, Math.round(ms / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+// elapsed time for a busy job; the 1 s ticker keeps every [data-since] up to date
+const elapsedHtml = j => `<span class="bd-elapsed" data-since="${esc(j.createdAt || '')}">${clock(Date.now() - Date.parse(j.createdAt || Date.now()))}</span>`;
 function statusLine(n) {
   const j = jobOf(n);
   if (!j) return '';
   const t = { queued: '排队中', running: '生成中…', done: '完成', partial: '部分完成', failed: '失败' }[j.status] || j.status;
-  return `<div class="bd-status ${j.status}">${t}${j.errors?.length ? ' · ' + esc(j.errors[0]).slice(0, 80) : ''}</div>`;
+  return `<div class="bd-status ${j.status}">${t}${isBusy(j) ? ' ' + elapsedHtml(j) : ''}${j.errors?.length ? ' · ' + esc(j.errors[0]).slice(0, 80) : ''}</div>`;
 }
 function resultsHtml(n, actions) {
   const j = jobOf(n);
@@ -115,7 +144,7 @@ function resultsHtml(n, actions) {
   const pick = outValue(n);
   const waiting = ['queued', 'running'].includes(j.status) ? j.count - j.outputs.length : 0;
   return `<div class="bd-results">${outs.map(o => `<figure class="${o.file === pick ? 'picked' : ''}">
-      <img src="${fileUrl(o.final || o.file)}" draggable="true" data-pick="${esc(o.file)}" data-asset='${esc(JSON.stringify({ kind: 'file', file: o.file }))}' title="单击选中，双击放大，可拖到别的卡片">
+      <img src="${fileUrl(o.final || o.file)}" draggable="true" ${o.orig ? `data-orig="${esc(o.orig)}"` : ''} data-pick="${esc(o.file)}" data-asset='${esc(JSON.stringify({ kind: 'file', file: o.file, from: n.id }))}' title="单击选中，双击放大；拖到别的卡片，或拖到空白处接着做">
       <figcaption>${actions.map(([a, l]) => `<button data-act="${a}" data-file="${esc(o.file)}">${l}</button>`).join('')}</figcaption></figure>`).join('')}
     ${Array.from({ length: waiting }, () => '<div class="bd-wait"></div>').join('')}</div>`;
 }
@@ -142,13 +171,13 @@ function bodyHtml(n) {
         <button data-act="run" class="bd-run" ${m.k === 'none' ? 'disabled' : ''}>运行 ▶</button>
       </div>
       ${d.outfit === 'change' ? `<input data-field="outfitText" placeholder="英文描述衣服，例如 a cream knit cardigan" value="${esc(d.outfitText || '')}">` : ''}
-      ${statusLine(n)}${historyNav(n)}${resultsHtml(n, [['send-relight', '打光'], ['send-live', '实况'], ['send-replica', '再复刻']])}`;
+      ${statusLine(n)}${historyNav(n)}${resultsHtml(n, [['send-relight', '打光'], ['send-retouch', '修图'], ['send-live', '实况'], ['send-replica', '再复刻']])}`;
   }
   if (n.type === 'relight') return `
       ${slotHtml(n, 'src', val(n, 'src'), '拖入要打光的图', true)}
       <div class="bd-ctrl"><select data-field="light">${Object.entries(S().state.meta.lights).map(([k, v]) => `<option value="${k}" ${k === (d.light || 'scene_match') ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select>
         <button data-act="run" class="bd-run" ${val(n, 'src') ? '' : 'disabled'}>运行 ▶</button></div>
-      ${statusLine(n)}${historyNav(n)}${resultsHtml(n, [['send-live', '实况'], ['send-replica', '再复刻']])}`;
+      ${statusLine(n)}${historyNav(n)}${resultsHtml(n, [['send-retouch', '修图'], ['send-live', '实况'], ['send-replica', '再复刻']])}`;
   if (n.type === 'live') {
     const outs = (jobOf(n)?.outputs || []).filter(o => o.live);
     return `
@@ -156,6 +185,29 @@ function bodyHtml(n) {
       <div class="bd-ctrl"><select data-field="preset">${Object.entries(S().state.meta.livePresets || {}).map(([k, v]) => `<option value="${k}" ${k === (d.preset || 'breeze') ? 'selected' : ''}>${esc(v.label)}</option>`).join('')}</select>
         <button data-act="run" class="bd-run" ${val(n, 'src') ? '' : 'disabled'}>运行 ▶</button></div>
       ${statusLine(n)}${historyNav(n)}${outs.map(o => `<video src="${fileUrl(o.file)}" poster="${fileUrl(o.poster || o.file)}" autoplay loop muted playsinline class="bd-video"></video>`).join('')}`;
+  }
+  if (n.type === 'retouch') {
+    const srcs = srcList(n), u = upstreamOf(n), scene = sceneOf(n), adj = d.adj || {}, st = d.strength ?? 100;
+    const from = u ? `来自 ${TYPES[u.type].title} ${String(board.nodes.filter(x => x.type === u.type).indexOf(u) + 1).padStart(2, '0')}` : '';
+    const thumbs = d.src ? slotHtml(n, 'src', d.src, '', false)
+      : srcs.length ? `<div class="bd-srcs" data-slot="src">${srcs.slice(0, 4).map(f => `<img src="${fileUrl(f)}" data-zoom="${esc(f)}" style="filter:${previewFilter(adj)}">`).join('')}</div><div class="bd-mode"><b>整批 ${srcs.length} 张</b><span>${from}，上游换批次会跟着换</span></div>`
+      : slotHtml(n, 'src', null, '拖入一张图<br><small>或从复刻卡拉线过来，整批修</small>', false);
+    return `
+      ${thumbs}
+      <div class="bd-ctrl"><select data-field="recipeId" title="配方">${recipes.map(r => `<option value="${r.id}" ${r.id === recipeOf(n)?.id ? 'selected' : ''}>${esc(r.name)}${r.builtin ? '' : ' ★'}</option>`).join('')}</select></div>
+      <label class="bd-range">强度<input type="range" data-field="strength" min="0" max="100" value="${st}"><output>${st}%</output></label>
+      <label class="bd-check"><input type="checkbox" data-field="matchRef" ${d.matchRef !== false ? 'checked' : ''} ${scene ? '' : 'disabled'}>按场景图配色 <small class="muted">${scene ? '人和背景像同一张照片' : '上游没有场景图'}</small></label>
+      <label class="bd-check"><input type="checkbox" data-field="auto" ${d.auto !== false ? 'checked' : ''}>上游出图后自动修 <small class="muted">工作台开着时</small></label>
+      <details class="bd-adj" ${d.adjOpen ? 'open' : ''}><summary>微调</summary>
+        ${Object.entries(ADJ()).map(([k, a]) => `<label class="bd-range">${a.label}<input type="range" data-adj="${k}" min="${a.min}" max="${a.max}" value="${adj[k] || 0}"><output>${adj[k] || 0}</output></label>`).join('')}
+        <p class="muted">缩略图是近似预览，滤镜效果运行后才看得到。</p></details>
+      <div class="bd-ctrl">
+        <select data-field="outSize"><option value="1080" ${d.outSize !== 'full' ? 'selected' : ''}>1080 宽（发帖）</option><option value="full" ${d.outSize === 'full' ? 'selected' : ''}>原尺寸</option></select>
+        <button data-act="save-recipe" class="ghost" title="把现在的配方、强度和微调存起来">存为配方</button>
+        <button data-act="run" class="bd-run" ${srcs.length ? '' : 'disabled'}>运行 ▶</button>
+      </div>
+      ${statusLine(n)}${historyNav(n)}${resultsHtml(n, [['send-live', '实况'], ['send-replica', '再复刻']])}
+      ${jobOf(n)?.outputs.some(o => o.orig) ? '<p class="muted bd-tip">按住结果看原图</p>' : ''}`;
   }
   // v1 nodes
   if (n.type === 'image') return d.file ? `<img class="bd-thumb" src="${fileUrl(d.file)}" data-zoom="${esc(d.file)}">` : '';
@@ -172,7 +224,7 @@ function portsHtml(n) {
 }
 function nodeHtml(n) {
   const num = board.nodes.filter(x => x.type === n.type).indexOf(n) + 1;
-  return `<div class="bd-node t-${n.type} ${selected === n.id ? 'sel' : ''}" data-id="${n.id}" style="left:${n.x}px;top:${n.y}px;width:${CARD_W[n.type]}px">
+  return `<div class="bd-node t-${n.type} ${selected === n.id ? 'sel' : ''} ${isBusy(jobOf(n)) ? 'busy' : ''}" data-id="${n.id}" style="left:${n.x}px;top:${n.y}px;width:${CARD_W[n.type]}px">
     ${portsHtml(n)}
     <div class="bd-head"><b>${TYPES[n.type].title}</b><span class="bd-num">${String(num).padStart(2, '0')}</span><span class="grow"></span><button class="bd-x" data-act="dup" title="复制这张卡（Ctrl+D）">⧉</button><button class="bd-x" data-act="del" title="删除（Delete）">×</button></div>
     <div class="bd-body">${bodyHtml(n)}</div></div>`;
@@ -183,11 +235,13 @@ function render() {
   world().insertAdjacentHTML('beforeend', board.nodes.map(nodeHtml).join(''));
   applyView();
   emptyState();
+  renderQueue();
   setTimeout(() => drawWires(), 30);
 }
 function refreshNode(n) {
-  const el = world().querySelector(`.bd-node[data-id="${n.id}"] .bd-body`);
-  if (el) el.innerHTML = bodyHtml(n);
+  const card = world().querySelector(`.bd-node[data-id="${n.id}"]`);
+  if (card) { card.querySelector('.bd-body').innerHTML = bodyHtml(n); card.classList.toggle('busy', isBusy(jobOf(n))); }
+  renderQueue();
   setTimeout(() => drawWires(), 30);
 }
 function refreshDownstream(n) { board.edges.filter(e => e.from.node === n.id).forEach(e => { const t = nodeById(e.to.node); if (t) refreshNode(t); }); }
@@ -242,7 +296,7 @@ function placeFree(n) {
 }
 function addNode(type, x, y, data = {}) {
   checkpoint();
-  const defaults = { replica: { outfit: 'keep', count: 2, faceId: proj().faces[0]?.id || '', refs: [] }, relight: { light: 'scene_match' }, live: { preset: 'breeze' } };
+  const defaults = { replica: { outfit: 'keep', count: 2, faceId: proj().faces[0]?.id || '', refs: [] }, relight: { light: 'scene_match' }, live: { preset: 'breeze' }, retouch: { recipeId: 'phone', strength: 100, adj: {}, matchRef: true, auto: true, outSize: '1080' } };
   const n = { id: uid('n'), type, x: Math.round(x), y: Math.round(y), data: { ...(defaults[type] || {}), ...data } };
   board.nodes.push(n);
   selected = n.id;
@@ -284,12 +338,110 @@ function link(from, toNode, port) {
 // one click from a result: new card to the right, already filled and linked
 function sendOn(n, file, type) {
   const r = rectOf(n);
-  const data = type === 'replica' ? { scene: file } : { src: file };
+  // a retouch card takes the whole batch over the wire, not just the clicked image
+  const data = type === 'replica' ? { scene: file } : type === 'retouch' ? {} : { src: file };
   const m = addNode(type, r.x + r.w + GAP, r.y, data);
   if (type !== 'replica') { link(n, m, 'src'); }
+  if (type === 'retouch') refreshNode(m);
   n.data.pick = file;
   refreshNode(n); setTimeout(() => drawWires(), 40); save();
   return m;
+}
+
+// ---- quick-add menu: double-click empty canvas, or drop a result / a wire on empty canvas ----
+// ctx: {} = blank card; {files:[...]} = new card(s) holding these images; {from: nodeId, file} = follow-up of a result;
+// {from: nodeId, wire: true} = follow-up fed by a wire (it follows whichever result the source card has picked)
+let menu = null;
+function closeMenu() {
+  if (!menu) return;
+  menu.el.remove(); menu = null;
+  drawWires();
+}
+function openMenu(clientX, clientY, ctx) {
+  closeMenu();
+  const followUp = !!ctx.from;
+  const items = [
+    ['replica', followUp ? '再复刻' : '复刻卡', followUp ? '把这张当场景图，再换一次人' : ctx.files ? '把图放进场景框' : '换人或按提示词生成'],
+    ['relight', '打光', '给图重新打光'],
+    ['live', '实况', '让图动起来'],
+    ['retouch', '修图', followUp ? '整批套配方、按场景配色' : '套配方、微调色调'],
+  ];
+  const c = canvas().getBoundingClientRect();
+  const el = document.createElement('div');
+  el.className = 'bd-menu';
+  el.innerHTML = `<p>${followUp ? '接着做什么？' : ctx.files ? `用这${ctx.files.length > 1 ? ` ${ctx.files.length} ` : ''}张图新建` : '在这里新建'}</p>`
+    + items.map(([t, l, h], i) => `<button data-menu="${t}"><kbd>${i + 1}</kbd><b>${l}</b><small>${h}</small></button>`).join('');
+  canvas().appendChild(el);
+  // keep the menu inside the canvas
+  const x = Math.min(clientX - c.left, c.width - el.offsetWidth - 8), y = Math.min(clientY - c.top, c.height - el.offsetHeight - 8);
+  el.style.left = Math.max(8, x) + 'px'; el.style.top = Math.max(8, y) + 'px';
+  menu = { el, ctx, pt: canvasPoint(clientX, clientY) };
+  el.querySelector('button').focus({ preventScroll: true });
+}
+function chooseMenu(type) {
+  if (!menu) return;
+  const { ctx, pt } = menu;
+  closeMenu();
+  const from = ctx.from && nodeById(ctx.from);
+  if (ctx.files) return ctx.files.forEach((f, i) => addNode(type, pt.x + i * 24, pt.y + i * 24, type === 'replica' ? { scene: f } : { src: f }));
+  if (from && ctx.file) {
+    // same as the 打光 / 实况 / 再复刻 buttons under a result, but placed where it was dropped
+    const m = addNode(type, pt.x, pt.y - 30, type === 'replica' ? { scene: ctx.file } : type === 'retouch' ? {} : { src: ctx.file });
+    if (type !== 'replica') link(from, m, 'src');
+    from.data.pick = ctx.file;
+    refreshNode(from); refreshNode(m); save();
+    return;
+  }
+  const m = addNode(type, pt.x, pt.y - 30);
+  if (from) { link(from, m, type === 'replica' ? 'scene' : 'src'); refreshNode(m); save(); }
+}
+
+// ---- run queue: running cards glow, the panel lists every running job in the project ----
+const JOB_LABEL = { swap: '复刻换人', gen: '生成', relight: '打光', live: '实况', retouch: '修图' };
+// queue panel: opens by itself while something runs, unless you opened or closed it yourself (null = automatic)
+let queueOpen = null, ticker = null;
+const cardOfJob = id => board.nodes.find(n => historyOf(n).includes(id));
+function renderQueue() {
+  const el = $('#bdQueue');
+  if (!el || !proj()) return;
+  const jobs = proj().jobs;
+  const busy = jobs.filter(isBusy);
+  const recent = jobs.filter(j => !isBusy(j) && j.finishedAt && Date.now() - Date.parse(j.finishedAt) < 10 * 60e3).slice(-4).reverse();
+  const q = proj().queue;
+  const row = j => {
+    const n = cardOfJob(j.id), thumb = j.outputs.find(o => !o.live)?.file || j.source;
+    const name = n ? `${TYPES[n.type].title} ${String(board.nodes.filter(x => x.type === n.type).indexOf(n) + 1).padStart(2, '0')}` : '不在画布上';
+    const st = isBusy(j) ? elapsedHtml(j) : { done: '完成', partial: '部分', failed: '失败' }[j.status] || j.status;
+    return `<li class="${j.status} ${n ? 'go' : ''}" ${n ? `data-focus="${n.id}"` : ''} title="${n ? '点一下跳到这张卡' : '从别的标签页提交的'}">
+      ${thumb ? `<img src="${fileUrl(thumb)}">` : '<i></i>'}<span><b>${JOB_LABEL[j.type] || j.type} · ${j.outputs.length}/${j.count}</b><small>${esc(name)}</small></span><em>${st}</em></li>`;
+  };
+  const open = queueOpen ?? busy.length > 0;
+  el.classList.toggle('open', open);
+  el.classList.toggle('active', busy.length > 0);
+  el.innerHTML = `<button data-act="queue" class="bd-qhead">${busy.length ? `<i class="bd-dot"></i>运行中 ${busy.length}` : '队列空闲'}<span>${open ? '收起' : '展开'}</span></button>
+    ${open ? `<ul>${busy.map(row).join('')}${recent.length ? `<li class="bd-qsep">刚完成</li>${recent.map(row).join('')}` : ''}${!busy.length && !recent.length ? '<li class="bd-qsep">选中一张卡按 Ctrl+Enter 运行</li>' : ''}</ul>
+    ${q && (q.active || q.pending) ? `<p class="bd-qfoot">中转站：${q.active} 张在出，${q.pending} 张排队（同时最多 3 张）</p>` : ''}` : ''}`;
+  clearInterval(ticker);
+  if (document.querySelector('#bdCanvas .bd-elapsed')) ticker = setInterval(() => {
+    const els = document.querySelectorAll('#bdCanvas .bd-elapsed[data-since]');
+    if (!els.length || $('#tab-board')?.hidden) return clearInterval(ticker);
+    els.forEach(e => { e.textContent = clock(Date.now() - Date.parse(e.dataset.since)); });
+  }, 1000);
+}
+// pan so the card sits in the middle, select it and flash it once
+function focusNode(n) {
+  const c = canvas().getBoundingClientRect(), r = rectOf(n), k = board.view.k;
+  board.view.x = c.width / 2 - (r.x + r.w / 2) * k;
+  board.view.y = Math.min(40, c.height / 2 - (r.y + Math.min(r.h, c.height / k) / 2) * k);
+  applyView(); drawWires(); select(n.id); save();
+  const el = world().querySelector(`.bd-node[data-id="${n.id}"]`);
+  el?.classList.remove('flash'); void el?.offsetWidth; el?.classList.add('flash');
+}
+async function runCard(n) {
+  const btn = world().querySelector(`.bd-node[data-id="${n.id}"] [data-act=run]`);
+  if (!btn || btn.disabled) return S().toast(btn ? '这张卡还没填好，先放图或写提示词' : '这张卡不能运行', true);
+  btn.disabled = true;
+  try { await run(n); } finally { const b = world().querySelector(`.bd-node[data-id="${n.id}"] [data-act=run]`); if (b) b.disabled = false; }
 }
 
 // ---- slots ----------------------------------------------------------------------------
@@ -337,6 +489,14 @@ async function run(n) {
     } else return S().toast('先拖一张场景图并选模特，或者写提示词', true);
   } else if (n.type === 'relight') {
     job = await api('POST', `/api/projects/${p.id}/relight`, { source: val(n, 'src'), light: n.data.light || 'scene_match', strength: 'normal', count: 1, ...genSettings() });
+  } else if (n.type === 'retouch') {
+    const sources = srcList(n), rec = recipeOf(n), u = upstreamOf(n);
+    if (!sources.length) return S().toast('先拖一张图进来，或从复刻卡拉线过来', true);
+    job = await api('POST', `/api/projects/${p.id}/retouch`, {
+      sources, recipe: { base: rec?.recipe.base || 'none', strength: n.data.strength ?? 100, adj: n.data.adj || {} }, recipeName: rec?.name,
+      matchRef: n.data.matchRef !== false ? sceneOf(n) : null, outSize: n.data.outSize, upstream: u?.data.jobId || null,
+    });
+    n.data.autoFor = u?.data.jobId || null;
   } else if (n.type === 'live') {
     job = await api('POST', `/api/projects/${p.id}/live`, { source: val(n, 'src'), preset: n.data.preset || 'breeze', seconds: 3, count: 1, mode: 'video' });
   }
@@ -344,18 +504,32 @@ async function run(n) {
   checkpoint();
   historyOf(n).push(job.id); n.data.jobId = job.id; n.data.pick = null;
   S().state.p = await api('GET', `/api/projects/${p.id}`);
+  seenBusy.add(job.id);
   refreshNode(n); save(); watch();
   S().toast('已提交');
+  // a local retouch can finish before the next poll: check downstream cards now too
+  setTimeout(async () => { S().state.p = await api('GET', `/api/projects/${p.id}`); board.nodes.filter(x => x.data.jobId).forEach(refreshNode); await autoFollow(); watch(); }, 2500);
+}
+// auto-follow: a 修图卡 runs by itself when the batch feeding it finishes (only batches seen running in this session,
+// so opening an old board never sets off a run)
+const seenBusy = new Set();
+async function autoFollow() {
+  for (const n of board.nodes.filter(x => x.type === 'retouch' && x.data.auto !== false && !x.data.src)) {
+    const j = jobOf(upstreamOf(n));
+    if (!j || isBusy(j) || !seenBusy.has(j.id) || n.data.autoFor === j.id || !j.outputs.length) continue;
+    n.data.autoFor = j.id;
+    try { await run(n); S().toast('上游出图了，修图卡已自动开始'); } catch (e) { S().toast('自动修图失败：' + e.message, true); }
+  }
 }
 function watch() {
   clearTimeout(pollTimer);
-  const busy = id => ['queued', 'running'].includes(proj().jobs.find(j => j.id === id)?.status);
-  if (!board.nodes.some(n => historyOf(n).some(busy))) return;
+  for (const j of proj().jobs) if (isBusy(j)) seenBusy.add(j.id);
+  if (!proj().jobs.some(isBusy)) return;
   pollTimer = setTimeout(async () => {
     if (!proj()) return;
     S().state.p = await S().api('GET', `/api/projects/${proj().id}`);
     board.nodes.filter(n => n.data.jobId).forEach(refreshNode);
-    renderAssets(); watch();
+    renderQueue(); renderAssets(); await autoFollow(); watch();
   }, 4000);
 }
 
@@ -366,6 +540,8 @@ function select(id) {
   world().querySelectorAll('.bd-node').forEach(el => el.classList.toggle('sel', el.dataset.id === id));
 }
 function onPointerDown(e) {
+  if (menu && !e.target.closest('.bd-menu')) closeMenu();
+  if (e.target.closest('#bdQueue, .bd-menu')) return;
   const port = e.target.closest('.bd-port.out');
   if (port) { e.preventDefault(); drag = { kind: 'wire', from: { node: port.dataset.node, port: port.dataset.port }, a: portCenter(port.dataset.node, port.dataset.port, 'out') }; return; }
   const nodeEl = e.target.closest('.bd-node');
@@ -410,8 +586,12 @@ function onPointerUp(e) {
         board.edges.push({ id: uid('e'), from: drag.from, to: { node: to.id, port } });
         refreshNode(to); save();
       } else if (port) S().toast('这两张卡接不上', true);
-    }
-    drawWires();
+      drawWires();
+    } else if (!nodeEl && canvas().contains(document.elementFromPoint(e.clientX, e.clientY)) && !document.elementFromPoint(e.clientX, e.clientY).closest('#bdQueue')) {
+      const b = canvasPoint(e.clientX, e.clientY);
+      openMenu(e.clientX, e.clientY, { from: drag.from.node, wire: true });
+      drawWires({ a: drag.a, b });
+    } else drawWires();
   }
   if (drag.kind === 'node' && (drag.n.x !== drag.x0 || drag.n.y !== drag.y0)) { undoStack.push(drag.before); redoStack.length = 0; updateUndoButtons(); }
   if (drag.kind === 'node' || drag.kind === 'pan') save();
@@ -419,8 +599,9 @@ function onPointerUp(e) {
   drag = null;
 }
 function onWheel(e) {
-  if (e.target.closest('textarea, select')) return;
+  if (e.target.closest('textarea, select, #bdQueue, .bd-menu')) return;
   e.preventDefault();
+  closeMenu();
   const c = canvas().getBoundingClientRect();
   const k0 = board.view.k, k = Math.min(1.6, Math.max(0.35, k0 * (e.deltaY < 0 ? 1.1 : 1 / 1.1)));
   const mx = e.clientX - c.left, my = e.clientY - c.top;
@@ -442,8 +623,10 @@ async function onDrop(e) {
     return;
   }
   // dropped on empty canvas: start a new card with it
-  const pt = canvasPoint(e.clientX, e.clientY);
-  for (const [i, a] of assets.entries()) addNode('replica', pt.x + i * 24, pt.y + i * 24, a.kind === 'face' ? { faceId: a.faceId } : { scene: a.file });
+  const files = assets.filter(a => a.kind === 'file');
+  if (!files.length) { const pt = canvasPoint(e.clientX, e.clientY); return assets.forEach((a, i) => addNode('replica', pt.x + i * 24, pt.y + i * 24, { faceId: a.faceId })); }
+  const from = files.length === 1 && files[0].from && nodeById(files[0].from);
+  openMenu(e.clientX, e.clientY, from ? { from: from.id, file: files[0].file } : { files: files.map(a => a.file) });
 }
 function fit() {
   if (!board.nodes.length) { board.view = { x: 40, y: 40, k: 1 }; applyView(); drawWires(); return; }
@@ -480,11 +663,34 @@ function deleteNode(n) {
   render(); save();
 }
 
+async function loadRecipes() { recipes = await S().api('GET', '/api/recipes'); }
+async function saveRecipeFrom(n) {
+  const base = recipeOf(n);
+  const name = window.prompt('配方名字（例如 韩女暖调）', base && !base.builtin ? base.name : '');
+  if (!name || !name.trim()) return;
+  const r = await S().api('POST', '/api/recipes', { name, recipe: { base: base?.recipe.base || 'none', strength: n.data.strength ?? 100, adj: n.data.adj || {} } });
+  await loadRecipes();
+  checkpoint(); n.data.recipeId = r.id;
+  board.nodes.filter(x => x.type === 'retouch').forEach(refreshNode); save();
+  S().toast('已存为配方「' + r.name + '」，每张修图卡都能选');
+}
+// press and hold a 修图 result to see the original
+let peeking = null;
+function peek(e) {
+  const img = e.target.closest?.('.bd-results img[data-orig]');
+  if (!img) return;
+  peeking = { img, src: img.src };
+  img.src = fileUrl(img.dataset.orig);
+}
+function unpeek() { if (peeking) { peeking.img.src = peeking.src; peeking = null; } }
+
 function bindOnce() {
   if (bindOnce.done) return;
   bindOnce.done = true;
   const cv = canvas();
   cv.addEventListener('pointerdown', onPointerDown);
+  cv.addEventListener('pointerdown', peek);
+  window.addEventListener('pointerup', unpeek);
   window.addEventListener('pointermove', onPointerMove);
   window.addEventListener('pointerup', onPointerUp);
   cv.addEventListener('wheel', onWheel, { passive: false });
@@ -510,6 +716,11 @@ function bindOnce() {
   });
   $('#bdEmpty').addEventListener('click', e => { const b = e.target.closest('[data-add]'); if (b) onAdd(b.dataset.add); });
   cv.addEventListener('click', async e => {
+    const mi = e.target.closest('[data-menu]');
+    if (mi) return chooseMenu(mi.dataset.menu);
+    if (e.target.closest('[data-act=queue]')) { queueOpen = !$('#bdQueue').classList.contains('open'); return renderQueue(); }
+    const fo = e.target.closest('[data-focus]');
+    if (fo) { const n = nodeById(fo.dataset.focus); if (n) focusNode(n); return; }
     const wire = e.target.closest('.bd-wire');
     if (wire && !wire.classList.contains('temp')) {
       checkpoint();
@@ -525,19 +736,33 @@ function bindOnce() {
     else if (act === 'dup') duplicate(n);
     else if (act === 'hist') { const h = historyOf(n); const i = h.indexOf(n.data.jobId) + Number(e.target.dataset.dir); if (h[i]) { n.data.jobId = h[i]; refreshNode(n); save(); } }
     else if (act === 'clear') clearSlot(n, e.target.dataset.slot);
-    else if (act === 'run') { e.target.disabled = true; try { await run(n); } finally { e.target.disabled = false; } }
+    else if (act === 'run') await runCard(n);
     else if (act === 'send-relight') sendOn(n, e.target.dataset.file, 'relight');
     else if (act === 'send-live') sendOn(n, e.target.dataset.file, 'live');
+    else if (act === 'send-retouch') sendOn(n, e.target.dataset.file, 'retouch');
+    else if (act === 'save-recipe') saveRecipeFrom(n);
+    else if (e.target.tagName === 'SUMMARY') n.data.adjOpen = !e.target.parentElement.open;
     else if (act === 'send-replica') sendOn(n, e.target.dataset.file, 'replica');
     else if (e.target.dataset.pick) { n.data.pick = e.target.dataset.pick; refreshNode(n); refreshDownstream(n); save(); }
   });
   cv.addEventListener('dblclick', e => {
     const f = e.target.dataset.pick || e.target.dataset.zoom;
-    if (f) S().openModal(`<div class="zoom"><img src="${fileUrl(f)}"></div>`);
+    if (f) return S().openModal(`<div class="zoom"><img src="${fileUrl(f)}"></div>`);
+    if (e.target === canvas() || e.target === world() || e.target === wires()) openMenu(e.clientX, e.clientY, {});
   });
   let typing = null, typingT = null;
   cv.addEventListener('input', e => {
     const nodeEl = e.target.closest('.bd-node'), field = e.target.dataset.field;
+    // sliders: numbers, one undo step per drag, preview updated in place
+    if (nodeEl && e.target.type === 'range') {
+      const n = nodeById(nodeEl.dataset.id), k = e.target.dataset.adj, v = Number(e.target.value);
+      if (typing !== e.target) { checkpoint(); typing = e.target; }
+      clearTimeout(typingT); typingT = setTimeout(() => { typing = null; }, 1500);
+      if (k) { n.data.adj = { ...(n.data.adj || {}), [k]: v }; nodeEl.querySelectorAll('.bd-srcs img').forEach(i => { i.style.filter = previewFilter(n.data.adj); }); }
+      else n.data[field] = v;
+      e.target.nextElementSibling.textContent = k ? v : v + '%';
+      return save();
+    }
     if (!nodeEl || !field || e.target.tagName === 'SELECT') return;
     const n = nodeById(nodeEl.dataset.id);
     if (typing !== e.target) { checkpoint(); typing = e.target; }
@@ -550,14 +775,27 @@ function bindOnce() {
     const nodeEl = e.target.closest('.bd-node'), field = e.target.dataset.field;
     if (!nodeEl || !field) return;
     const n = nodeById(nodeEl.dataset.id);
-    if (e.target.tagName === 'SELECT') checkpoint();
-    n.data[field] = e.target.value;
+    if (e.target.type === 'range') return;
+    if (e.target.tagName === 'SELECT' || e.target.type === 'checkbox') checkpoint();
+    n.data[field] = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
+    // picking a recipe loads its strength and fine-tuning into the card
+    if (field === 'recipeId') { const r = recipeOf(n); n.data.strength = r.recipe.strength; n.data.adj = { ...r.recipe.adj }; refreshNode(n); }
     if (['outfit', 'faceId'].includes(field)) refreshNode(n);
     save();
   });
   // shortcuts on the whole window while the workbench tab is open; never while typing
   window.addEventListener('keydown', e => {
     if ($('#tab-board')?.hidden || !$('#modal')?.hidden) return;
+    if (menu) {
+      if (e.key === 'Escape') { e.preventDefault(); return closeMenu(); }
+      const t = { 1: 'replica', 2: 'relight', 3: 'live', 4: 'retouch' }[e.key];
+      if (t) { e.preventDefault(); return chooseMenu(t); }
+    }
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      const n = nodeById(e.target.closest?.('.bd-node')?.dataset.id) || nodeById(selected);
+      e.preventDefault();
+      return n ? runCard(n) : S().toast('先点一下要运行的卡片');
+    }
     if (e.target.closest?.('input, textarea, select, [contenteditable]')) return;
     const mod = e.ctrlKey || e.metaKey, key = e.key.toLowerCase();
     if (mod && key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
@@ -572,6 +810,7 @@ window.board = {
     if (!proj()) return;
     bindOnce();
     if (loadedFor !== proj().id) { await load(); selected = null; }
+    await loadRecipes();
     renderAssets();
     render();
     // never open on an empty-looking canvas when the cards are just off screen

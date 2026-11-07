@@ -123,12 +123,12 @@
         </aside>
         <div id="bdMain">
           <div id="bdBar">
-            <button data-add="replica" class="bd-accent">＋ 复刻卡</button><button data-add="relight">＋ 打光</button><button data-add="live">＋ 实况</button>
+            <button data-add="replica" class="bd-accent">＋ 复刻卡</button><button data-add="relight">＋ 打光</button><button data-add="live">＋ 实况</button><button data-add="retouch">＋ 修图</button>
             <button data-act="undo" class="ghost" title="撤销（Ctrl+Z）" disabled>↶ 撤销</button><button data-act="redo" class="ghost" title="重做（Ctrl+Shift+Z）" disabled>↷ 重做</button>
             <span class="grow"></span><span id="bdSaved" class="muted"></span><button data-act="tidy" class="ghost">整理</button><button data-act="fit" class="ghost">回到全部</button>
           </div>
-          <div id="bdCanvas" tabindex="0"><div id="bdWorld"><svg id="bdWires"></svg></div><div id="bdEmpty" hidden></div></div>
-          <p class="hint bd-foot">把左边的图拖进卡片的虚线框；拖空白处平移，滚轮缩放。快捷键：Ctrl+Z 撤销，Ctrl+D 复制选中的卡，Delete 删除。</p>
+          <div id="bdCanvas" tabindex="0"><div id="bdWorld"><svg id="bdWires"></svg></div><div id="bdEmpty" hidden></div><div id="bdQueue"></div></div>
+          <p class="hint bd-foot">把图拖进卡片的虚线框；双击空白处新建卡片（按 1-4 选），把结果或连线拖到空白处可以接着做。拖空白处平移，滚轮缩放。快捷键：Ctrl+Enter 运行，Ctrl+Z 撤销，Ctrl+D 复制，Delete 删除。</p>
         </div>
       </div>
     </section>

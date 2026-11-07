@@ -301,7 +301,7 @@ function jobHtml(j, { withOutputs = true } = {}) {
   const statusText = { queued: '排队', running: '生成中', done: '完成', partial: '部分失败', failed: '失败' }[j.status];
   return `<div class="job" data-id="${j.id}">
     <div class="job-head"><span class="status ${j.status}">${statusText}</span>
-      <b>${j.type === 'swap' ? '换脸' : j.type === 'live' ? '实况图（' + j.seconds + ' 秒）' : j.type === 'relight' ? '打光：' + esc(state.meta.lights[j.light] || '') : '出图'}</b> ${esc(j.model)} · ${j.outputs.length}/${j.count} 张 · ${j.createdAt.slice(5, 16).replace('T', ' ')}
+      <b>${j.type === 'swap' ? '换脸' : j.type === 'live' ? '实况图（' + j.seconds + ' 秒）' : j.type === 'relight' ? '打光：' + esc(state.meta.lights[j.light] || '') : j.type === 'retouch' ? '修图：' + esc(j.recipeName || '微调') : '出图'}</b> ${esc(j.model || '本地')} · ${j.outputs.length}/${j.count} 张 · ${j.createdAt.slice(5, 16).replace('T', ' ')}
       ${face ? `· 模特 ${esc(face.name)}` : ''} ${j.refs.length ? `· 参考图 ${j.refs.length} 张` : ''}
       ${j.source ? `<img src="${fileUrl(j.source)}" style="height:36px;border-radius:4px" title="底图">` : ''}
       ${['done', 'partial', 'failed'].includes(j.status) ? '<button class="rerun" data-act="rerun">再来一批</button>' : ''}
@@ -407,7 +407,7 @@ function renderGallery() {
     const running = jobs.filter(j => ['queued', 'running'].includes(j.status)).map(j => jobHtml(j, { withOutputs: false })).join('');
     const bad = jobs.filter(j => ['partial', 'failed'].includes(j.status));
     const strip = running + (bad.length ? `<details class="failbox"><summary>${bad.length} 个任务有失败（点开看原因、重试）</summary>${bad.map(j => jobHtml(j, { withOutputs: false })).join('')}</details>` : '');
-    const label = j => `${j.type === 'live' ? '实况图' : j.type === 'relight' ? '打光' : j.type === 'swap' ? '换脸' : '出图'} · ${j.model} · ${j.createdAt.slice(5, 16).replace('T', ' ')}`;
+    const label = j => `${j.type === 'live' ? '实况图' : j.type === 'relight' ? '打光' : j.type === 'swap' ? '换脸' : j.type === 'retouch' ? '修图' : '出图'} · ${j.model || '本地'} · ${j.createdAt.slice(5, 16).replace('T', ' ')}`;
     const cards = jobs.flatMap(j => {
       const waiting = ['queued', 'running'].includes(j.status) ? j.count - j.outputs.length : 0;
       return [

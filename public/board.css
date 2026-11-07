@@ -94,3 +94,61 @@
 .bd-hist button { padding: 1px 9px; font-size: 13px; }
 .bd-hist button:disabled { opacity: .3; }
 #bdBar button:disabled { opacity: .4; }
+
+/* quick-add menu (double-click empty canvas / drop a result or wire on empty canvas) */
+.bd-menu { position: absolute; z-index: 20; width: 220px; padding: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 18px 40px rgba(31,36,32,.22); animation: bd-pop .12s ease-out; }
+.bd-menu p { margin: 4px 8px 6px; font-size: 11px; color: var(--muted); font-family: var(--f-mono, monospace); letter-spacing: .04em; }
+.bd-menu button { display: grid; grid-template-columns: 22px 1fr; grid-template-rows: auto auto; column-gap: 8px; width: 100%; text-align: left; padding: 7px 8px; border-radius: 10px; background: transparent; color: var(--ink); }
+.bd-menu button:hover, .bd-menu button:focus-visible { background: var(--pill); outline: none; }
+.bd-menu kbd { grid-row: 1 / 3; align-self: center; font-family: var(--f-mono, monospace); font-size: 11px; text-align: center; border: 1px solid var(--line-strong); border-radius: 6px; padding: 1px 0; color: var(--muted); }
+.bd-menu b { font-size: 13px; }
+.bd-menu small { font-size: 11px; color: var(--muted); }
+@keyframes bd-pop { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
+
+/* running cards glow; a card you jump to from the queue flashes once */
+.bd-node.busy { border-color: var(--warn); animation: bd-breathe 1.8s ease-in-out infinite; }
+@keyframes bd-breathe { 0%, 100% { box-shadow: 0 0 0 2px rgba(190,140,60,.18), var(--lift); } 50% { box-shadow: 0 0 0 6px rgba(190,140,60,.32), var(--lift); } }
+.bd-node.flash { animation: bd-flash .9s ease-out; }
+.bd-node.busy.flash { animation: bd-flash .9s ease-out, bd-breathe 1.8s ease-in-out .9s infinite; }
+@keyframes bd-flash { 0% { box-shadow: 0 0 0 10px rgba(75,102,86,.45), var(--lift); } 100% { box-shadow: 0 0 0 0 rgba(75,102,86,0), var(--lift); } }
+.bd-elapsed { font-variant-numeric: tabular-nums; }
+
+/* run queue panel, top right of the canvas */
+#bdQueue { position: absolute; top: 10px; right: 10px; z-index: 15; width: 240px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--lift); overflow: hidden; cursor: default; }
+#bdQueue:not(.open) { width: auto; }
+.bd-qhead { display: flex; align-items: center; gap: 7px; width: 100%; padding: 8px 12px; background: transparent; color: var(--ink); font-size: 12px; font-weight: 600; border-radius: 0; }
+.bd-qhead span { margin-left: auto; padding-left: 12px; font-weight: 400; color: var(--muted); font-size: 11px; }
+.bd-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); animation: bd-blink 1.2s ease-in-out infinite; }
+@keyframes bd-blink { 50% { opacity: .3; } }
+#bdQueue ul { list-style: none; margin: 0; padding: 0 6px 6px; max-height: 300px; overflow: auto; border-top: 1px solid var(--line); }
+#bdQueue li { display: grid; grid-template-columns: 34px 1fr auto; gap: 8px; align-items: center; padding: 6px; border-radius: 10px; font-size: 12px; }
+#bdQueue li.go { cursor: pointer; }
+#bdQueue li.go:hover { background: var(--pill); }
+#bdQueue li img, #bdQueue li i { width: 34px; height: 44px; object-fit: cover; border-radius: 6px; background: var(--surface); display: block; }
+#bdQueue li span { display: flex; flex-direction: column; min-width: 0; }
+#bdQueue li small { color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#bdQueue li em { font-style: normal; font-family: var(--f-mono, monospace); font-size: 11px; color: var(--muted); }
+#bdQueue li.running em, #bdQueue li.queued em { color: var(--warn); }
+#bdQueue li.failed em, #bdQueue li.partial em { color: var(--bad); }
+#bdQueue li.done em { color: var(--ok); }
+#bdQueue li.bd-qsep { display: block; padding: 8px 6px 2px; font-size: 11px; color: var(--muted); font-family: var(--f-mono, monospace); }
+.bd-qfoot { margin: 0; padding: 6px 12px 8px; font-size: 11px; color: var(--muted); border-top: 1px solid var(--line); }
+@media (prefers-reduced-motion: reduce) { .bd-node.busy, .bd-dot, .bd-menu { animation: none; } }
+
+/* 修图卡 */
+.bd-srcs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; border-radius: 12px; overflow: hidden; }
+.bd-srcs img { width: 100%; aspect-ratio: 3/4; object-fit: cover; display: block; cursor: zoom-in; transition: filter .12s; }
+.bd-range { display: grid; grid-template-columns: 44px 1fr 36px; align-items: center; gap: 8px; font-weight: 600; }
+.bd-range input { width: 100%; accent-color: var(--accent); padding: 0; }
+.bd-range output { font-family: var(--f-mono, monospace); font-size: 11px; font-weight: 400; color: var(--muted); text-align: right; }
+.bd-check { display: flex; align-items: center; gap: 6px; font-weight: 600; cursor: pointer; flex-wrap: wrap; }
+.bd-check input { width: auto; accent-color: var(--accent); }
+.bd-check small { font-weight: 400; font-size: 11px; }
+.bd-adj { border-top: 1px dashed var(--line); padding-top: 6px; display: flex; flex-direction: column; gap: 6px; }
+.bd-adj summary { cursor: pointer; font-size: 12px; font-weight: 600; color: var(--muted); }
+.bd-adj[open] { display: flex; }
+.bd-adj p { margin: 0; font-size: 11px; }
+.bd-ctrl .ghost { white-space: nowrap; padding: 6px 10px; font-size: 12px; }
+.bd-tip { margin: -2px 0 0; font-size: 11px; text-align: center; }
+.t-retouch .bd-results img[data-orig] { cursor: pointer; user-select: none; -webkit-user-drag: element; }
+.t-retouch .bd-slot { aspect-ratio: 4/3; }

@@ -20,6 +20,7 @@ import { buildPrompt, composePrompt, swapPrompt, extractAuthorPrompt, SHOTS, FLA
 import { listStyles, getStyle, saveStyle, deleteStyle, styleDir } from './lib/styles.mjs';
 import { postProcess, cropImage, grid, removeGrokWatermark, addAiLabel, POST_PRESETS, DEFAULT_POST } from './lib/post.mjs';
 import { imageExt } from './lib/net.mjs';
+import { retouch, listRecipes, saveRecipe, deleteRecipe, cleanRecipe, ADJUST } from './lib/retouch.mjs';
 
 const PUBLIC = path.join(ROOT, 'public');
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.mp4': 'video/mp4', '.json': 'application/json', '.gif': 'image/gif' };
@@ -121,11 +122,30 @@ function chainAutoLight(p, job) {
   }
 }
 
+// 修图 job: local ffmpeg on each source image (recipe + optional colour match to the scene image), no relay call.
+async function runRetouchJob(p, job) {
+  job.status = 'running';
+  saveProject(p);
+  const dir = projectDir(p.id);
+  const ref = job.matchRef ? resolveIn(p, job.matchRef) : null;
+  for (const [i, src] of job.sources.entries()) {
+    try {
+      const out = path.join(dir, 'outputs', `${job.id}_${i + 1}.jpg`);
+      await retouch(resolveIn(p, src), out, job.recipe, { ref, size: job.outSize });
+      job.outputs.push({ file: relTo(p, out), orig: src, final: null, post: null, star: 0 });
+    } catch (e) { job.errors.push('修图失败：' + String(e.stderr || e.message).trim().split(/\r?\n/).slice(-2).join(' ').slice(-240)); }
+    saveProject(p);
+  }
+  job.status = job.outputs.length === job.count ? 'done' : job.outputs.length ? 'partial' : 'failed';
+  job.finishedAt = new Date().toISOString();
+  saveProject(p);
+}
+
 function startJob(p, fields) {
   const job = { id: newId('j'), status: 'queued', createdAt: new Date().toISOString(), outputs: [], errors: [], ...fields };
   p.jobs.push(job);
   saveProject(p);
-  (job.type === 'live' ? runLiveJob(p, job) : runJob(p, job))
+  (job.type === 'live' ? runLiveJob(p, job) : job.type === 'retouch' ? runRetouchJob(p, job) : runJob(p, job))
     .then(() => chainAutoLight(p, job))
     .catch(e => { job.status = 'failed'; job.errors.push(explainError(e)); saveProject(p); });
   return job;
@@ -147,8 +167,25 @@ route('GET', '/api/meta', () => ({
   realisms: Object.fromEntries(Object.entries(REALISM).map(([k, v]) => [k, v.label])),
   livePresets: Object.fromEntries(Object.entries(LIVE_PRESETS).map(([k, v]) => [k, { label: v.label, prompt: v.prompt, gifPrompt: GIF_PROMPTS[k] }])),
   lights: Object.fromEntries(Object.entries(LIGHTS).map(([k, v]) => [k, v.label])), strengths: STRENGTH,
+  adjust: ADJUST,
   postPresets: Object.fromEntries(Object.entries(POST_PRESETS).map(([k, v]) => [k, v.label])), defaultPost: DEFAULT_POST,
 }));
+
+route('GET', '/api/recipes', () => listRecipes());
+route('POST', '/api/recipes', async req => { const b = await readJson(req); return saveRecipe(b.name, b.recipe); });
+route('DELETE', '/api/recipes/:rid', (req, { rid }) => { deleteRecipe(rid); return { ok: true }; });
+
+route('POST', '/api/projects/:id/retouch', async (req, { p }) => {
+  const b = await readJson(req);
+  const sources = [...new Set((b.sources || []).filter(Boolean))].slice(0, 8);
+  need(sources.length, '没有要修的图');
+  sources.forEach(f => resolveIn(p, f));
+  if (b.matchRef) resolveIn(p, b.matchRef);
+  return startJob(p, {
+    type: 'retouch', count: sources.length, sources, source: sources[0], refs: [], recipe: cleanRecipe(b.recipe),
+    recipeName: String(b.recipeName || '').slice(0, 30), matchRef: b.matchRef || null, outSize: b.outSize === 'full' ? 'full' : 1080, upstream: b.upstream || null,
+  });
+});
 
 route('GET', '/api/projects', () => listProjects());
 route('POST', '/api/projects', async req => createProject((await readJson(req)).name));
